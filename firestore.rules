@@ -1,0 +1,267 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Global Security Helper Functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email in [
+          "elijahstephenpaul03@gmail.com",
+          "admin@guardianai.io",
+          "admin@guardian.ai"
+        ] ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "admin")
+      );
+    }
+
+    function isParentCaller() {
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "parent"
+      );
+    }
+
+    // Family linking groups (/families/{familyCode})
+    match /families/{familyCode} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && (request.resource.data.ownerParentId == request.auth.uid || isAdmin());
+      allow update: if isSignedIn() && (
+        resource.data.ownerParentId == request.auth.uid || 
+        !('ownerParentId' in resource.data) ||
+        resource.data.ownerParentId == null ||
+        resource.data.ownerParentId == "" ||
+        isAdmin()
+      );
+      allow delete: if isSignedIn() && (resource.data.ownerParentId == request.auth.uid || isAdmin());
+    }
+
+    // Dedicated Family Link Requests (/familyLinkRequests/{requestId})
+    match /familyLinkRequests/{requestId} {
+      // Intended parent or requesting child or admin can read
+      allow get: if isSignedIn() && (
+        request.auth.uid == resource.data.parentUid || 
+        request.auth.uid == resource.data.childUid || 
+        isAdmin()
+      );
+      allow list: if isSignedIn() && (
+        request.auth.uid == resource.data.parentUid || 
+        request.auth.uid == resource.data.childUid || 
+        isAdmin()
+      );
+      
+      // Child creates legitimate request for themselves with status pending
+      allow create: if isSignedIn() && 
+        request.auth.uid == request.resource.data.childUid &&
+        request.resource.data.status == "pending" &&
+        request.resource.data.parentUid is string &&
+        request.resource.data.familyCode is string;
+
+      // Intended parent can accept/reject; requesting child can update status to pending/cancelled; admin has full rights
+      allow update: if isSignedIn() && (
+        (request.auth.uid == resource.data.parentUid && 
+         request.resource.data.status in ["accepted", "rejected", "pending", "approved", "disconnected"]) ||
+        (request.auth.uid == resource.data.childUid &&
+         request.resource.data.status in ["pending", "cancelled"]) ||
+        isAdmin()
+      );
+
+      // Parent, child or admin can delete
+      allow delete: if isSignedIn() && (
+        request.auth.uid == resource.data.parentUid ||
+        request.auth.uid == resource.data.childUid ||
+        isAdmin()
+      );
+    }
+
+    // Backward-compatibility match for familyRequests
+    match /familyRequests/{requestId} {
+      allow get: if isSignedIn() && (
+        request.auth.uid == resource.data.parentUid || 
+        request.auth.uid == resource.data.childUid || 
+        isAdmin()
+      );
+      allow list: if isSignedIn() && (
+        request.auth.uid == resource.data.parentUid || 
+        request.auth.uid == resource.data.childUid || 
+        isAdmin()
+      );
+      allow create: if isSignedIn() && 
+        request.auth.uid == request.resource.data.childUid &&
+        request.resource.data.status == "pending";
+      allow update: if isSignedIn() && (
+        (request.auth.uid == resource.data.parentUid && 
+         request.resource.data.status in ["accepted", "rejected", "pending", "approved", "disconnected"]) ||
+        (request.auth.uid == resource.data.childUid &&
+         request.resource.data.status in ["pending", "cancelled"]) ||
+        isAdmin()
+      );
+      allow delete: if isSignedIn() && (
+        request.auth.uid == resource.data.parentUid ||
+        request.auth.uid == resource.data.childUid ||
+        isAdmin()
+      );
+    }
+
+    // User Data & Subcollections
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow update: if isSignedIn() && (
+        request.auth.uid == userId ||
+        (resource.data.parentId == request.auth.uid) ||
+        (request.resource.data.parentId == request.auth.uid) ||
+        isAdmin()
+      );
+      allow delete: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+
+      match /profiles/{profileId} {
+        allow read, write: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      }
+
+      match /logs/{logId} {
+        allow read: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+        allow write: if isSignedIn() && (request.auth.uid == userId || request.resource.data.childId == request.auth.uid || isAdmin());
+      }
+
+      match /dangerousEvents/{eventId} {
+        allow read, write: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      }
+
+      match /safeZones/{zoneId} {
+        allow read, write: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      }
+
+      match /chats/{chatId} {
+        allow read, write: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      }
+
+      match /conversations/{conversationId} {
+        allow read, write: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+
+        match /messages/{messageId} {
+          allow read, write: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+        }
+      }
+    }
+
+    // Companion device telemetry state
+    match /devices/{deviceId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn();
+      allow update: if isSignedIn() && (
+        request.auth.uid == resource.data.parentId ||
+        request.auth.uid == request.resource.data.parentId ||
+        request.auth.uid == resource.data.childId ||
+        request.auth.uid == request.resource.data.childId ||
+        !('parentId' in resource.data) ||
+        resource.data.parentId == null ||
+        isAdmin()
+      );
+      allow delete: if isSignedIn() && (
+        request.auth.uid == resource.data.parentId ||
+        request.auth.uid == resource.data.childId ||
+        isAdmin()
+      );
+    }
+
+    // Child homework tasks
+    match /homework/{homeworkId} {
+      allow read, write: if isSignedIn();
+    }
+
+    // Child daily goals
+    match /dailyGoals/{goalId} {
+      allow read, write: if isSignedIn();
+    }
+
+    // Emergency SOS alerts
+    match /sosAlerts/{alertId} {
+      allow read: if isSignedIn();
+
+      function isAlertParent(alertData) {
+        return isParentCaller() && (
+          // 1. Alert explicitly specifies parent's UID
+          ('parentUid' in alertData && alertData.parentUid == request.auth.uid) ||
+          // 2. Child's user document has parentId pointing to this parent
+          ('childId' in alertData && alertData.childId is string && alertData.childId != "" &&
+           exists(/databases/$(database)/documents/users/$(alertData.childId)) &&
+           get(/databases/$(database)/documents/users/$(alertData.childId)).data.parentId == request.auth.uid) ||
+          // 3. Child profile exists under parent's profiles subcollection
+          ('childId' in alertData && alertData.childId is string && alertData.childId != "" &&
+           exists(/databases/$(database)/documents/users/$(request.auth.uid)/profiles/$(alertData.childId))) ||
+          // 4. Family group owner check
+          ('familyCode' in alertData && alertData.familyCode is string && alertData.familyCode != "" &&
+           exists(/databases/$(database)/documents/families/$(alertData.familyCode)) &&
+           get(/databases/$(database)/documents/families/$(alertData.familyCode)).data.ownerParentId == request.auth.uid) ||
+          // 5. Parent user document shares the same familyCode
+          ('familyCode' in alertData && alertData.familyCode is string && alertData.familyCode != "" &&
+           exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+           'familyCode' in get(/databases/$(database)/documents/users/$(request.auth.uid)).data &&
+           get(/databases/$(database)/documents/users/$(request.auth.uid)).data.familyCode == alertData.familyCode)
+        );
+      }
+
+      allow create: if isSignedIn() && (
+        request.resource.data.childId == request.auth.uid ||
+        request.resource.data.parentUid == request.auth.uid ||
+        isAdmin()
+      ) &&
+      request.resource.data.id is string &&
+      request.resource.data.childId is string &&
+      request.resource.data.childId.size() > 0 &&
+      request.resource.data.childName is string &&
+      request.resource.data.childName.size() > 0 &&
+      request.resource.data.childName.size() <= 120 &&
+      request.resource.data.status in ["active", "ACTIVE", "resolved", "RESOLVED"] &&
+      request.resource.data.timestamp is string;
+
+      // Restrict alert resolution strictly to authorized linked parent or admin
+      allow update: if isSignedIn() &&
+        // Caller authorization: must be linked parent or admin
+        (isAlertParent(resource.data) || isAdmin()) &&
+        // Prevent children from resolving their own distress alerts
+        (!('childId' in resource.data) || resource.data.childId != request.auth.uid || isAdmin()) &&
+        // Enforce state transition from active to resolved only
+        (resource.data.status in ["active", "ACTIVE"]) &&
+        (request.resource.data.status in ["resolved", "RESOLVED"]) &&
+        // Require audit attribution
+        ('resolvedBy' in request.resource.data && request.resource.data.resolvedBy == request.auth.uid) &&
+        ('resolvedAt' in request.resource.data && (
+          request.resource.data.resolvedAt == request.time || 
+          request.resource.data.resolvedAt is timestamp || 
+          request.resource.data.resolvedAt is string
+        )) &&
+        // Only allow resolution fields to be mutated
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'resolvedAt', 'resolvedBy']);
+
+      allow delete: if isSignedIn() && (
+        isAlertParent(resource.data) ||
+        resource.data.childId == request.auth.uid ||
+        isAdmin()
+      );
+    }
+
+    // System configuration & health (public read so registration can verify gateway status; write restricted to Admin)
+    match /system/{docId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // Audit logs
+    match /auditLogs/{logId} {
+      allow read: if isAdmin();
+      allow create: if isSignedIn();
+      allow update, delete: if isAdmin();
+    }
+  }
+}
+

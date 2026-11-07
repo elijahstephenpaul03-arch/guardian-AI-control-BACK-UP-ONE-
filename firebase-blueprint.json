@@ -1,0 +1,256 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Primary user document (Admin, Parent, or Child)",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "parent", "child"] },
+        "fullName": { "type": "string" },
+        "disabled": { "type": "boolean" },
+        "familyCode": { "type": "string" }
+      },
+      "required": ["email", "createdAt", "role"]
+    },
+    "ChildProfile": {
+      "title": "ChildProfile",
+      "description": "A monitored child profile",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "age": { "type": "integer" },
+        "avatar": { "type": "string" },
+        "screenTimeLimit": { "type": "integer" },
+        "screenTimeUsed": { "type": "integer" },
+        "deviceLocked": { "type": "boolean" },
+        "unlockedAt": { "type": "string" },
+        "appLimits": { "type": "object" },
+        "categoriesBlocked": { "type": "array" }
+      },
+      "required": ["id", "name"]
+    },
+    "ActivityLog": {
+      "title": "ActivityLog",
+      "description": "Monitored safety or educational activity log entry",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "childId": { "type": "string" },
+        "type": { "type": "string" },
+        "detail": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "app": { "type": "string" },
+        "duration": { "type": "integer" },
+        "category": { "type": "string" },
+        "status": { "type": "string" }
+      },
+      "required": ["id", "childId", "type", "timestamp"]
+    },
+    "DangerousEvent": {
+      "title": "DangerousEvent",
+      "description": "AI flagged suspicious or high-risk internet connection event",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "childId": { "type": "string" },
+        "category": { "type": "string" },
+        "target": { "type": "string" },
+        "riskLevel": { "type": "string" },
+        "confidence": { "type": "integer" },
+        "reason": { "type": "string" },
+        "actionTaken": { "type": "string" },
+        "suggestedAction": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "status": { "type": "string" }
+      },
+      "required": ["id", "childId", "category", "target", "riskLevel"]
+    },
+    "SafeZone": {
+      "title": "SafeZone",
+      "description": "Geofencing safe zone boundary for child location monitoring",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "active": { "type": "boolean" },
+        "radius": { "type": "integer" }
+      },
+      "required": ["name", "active", "radius"]
+    },
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "Conversation message in the Guardian AI counselor chat",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "role": { "type": "string" },
+        "text": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "childId": { "type": "string" },
+        "groundingMetadata": { "type": "object" }
+      },
+      "required": ["id", "role", "text", "timestamp"]
+    },
+    "Device": {
+      "title": "Device",
+      "description": "Companion child device telemetry",
+      "type": "object",
+      "properties": {
+        "deviceId": { "type": "string" },
+        "deviceName": { "type": "string" },
+        "deviceModel": { "type": "string" },
+        "androidVersion": { "type": "string" },
+        "battery": { "type": "integer" },
+        "charging": { "type": "boolean" },
+        "online": { "type": "boolean" },
+        "gps": {
+          "type": "object",
+          "properties": {
+            "lat": { "type": "number" },
+            "lng": { "type": "number" },
+            "name": { "type": "string" }
+          }
+        },
+        "screenOn": { "type": "boolean" },
+        "lastSeen": { "type": "string" },
+        "connectionQuality": { "type": "string" },
+        "sosActive": { "type": "boolean" }
+      },
+      "required": ["deviceId", "deviceName", "battery"]
+    },
+    "Family": {
+      "title": "Family",
+      "description": "Family linking group containing parent and children connections",
+      "type": "object",
+      "properties": {
+        "familyCode": { "type": "string" },
+        "familyName": { "type": "string" },
+        "ownerParentId": { "type": "string" },
+        "parentEmail": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["familyCode", "ownerParentId"]
+    },
+    "FamilyRequest": {
+      "title": "FamilyRequest",
+      "description": "Connection request from a child to link to a parent family network",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "familyCode": { "type": "string" },
+        "parentUid": { "type": "string" },
+        "childUid": { "type": "string" },
+        "childName": { "type": "string" },
+        "childEmail": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "accepted", "rejected", "approved"] },
+        "createdAt": { "type": "string" },
+        "respondedAt": { "type": "string" }
+      },
+      "required": ["familyCode", "parentUid", "childUid", "status", "createdAt"]
+    },
+    "Homework": {
+      "title": "Homework",
+      "description": "Child homework task assignment",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "childId": { "type": "string" },
+        "title": { "type": "string" },
+        "subject": { "type": "string" },
+        "dueDate": { "type": "string" },
+        "completed": { "type": "boolean" },
+        "notes": { "type": "string" }
+      },
+      "required": ["id", "childId", "title", "subject"]
+    },
+    "DailyGoal": {
+      "title": "DailyGoal",
+      "description": "Child daily learning or health goal",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "childId": { "type": "string" },
+        "title": { "type": "string" },
+        "category": { "type": "string" },
+        "targetMinutes": { "type": "integer" },
+        "completedMinutes": { "type": "integer" },
+        "completed": { "type": "boolean" }
+      },
+      "required": ["id", "childId", "title"]
+    },
+    "SosAlert": {
+      "title": "SosAlert",
+      "description": "Emergency SOS alert triggered by child",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "childId": { "type": "string" },
+        "childName": { "type": "string" },
+        "familyCode": { "type": "string" },
+        "parentUid": { "type": "string" },
+        "location": { "type": "object" },
+        "status": { "type": "string", "enum": ["active", "resolved"] },
+        "timestamp": { "type": "string" }
+      },
+      "required": ["id", "childId", "status", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/families/{familyCode}": {
+      "schema": "Family",
+      "description": "Family linking root collection"
+    },
+    "/familyLinkRequests/{requestId}": {
+      "schema": "FamilyRequest",
+      "description": "Family link pairing requests connecting children with parents"
+    },
+    "/familyRequests/{requestId}": {
+      "schema": "FamilyRequest",
+      "description": "Pending connection requests from children needing parent approval"
+    },
+    "/devices/{deviceId}": {
+      "schema": "Device",
+      "description": "Companion device real-time telemetry state"
+    },
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Parent or child primary document root"
+    },
+    "/users/{userId}/profiles/{profileId}": {
+      "schema": "ChildProfile",
+      "description": "Monitored children profiles linked to the parent"
+    },
+    "/users/{userId}/logs/{logId}": {
+      "schema": "ActivityLog",
+      "description": "Comprehensive activity streams for the parent's children"
+    },
+    "/users/{userId}/dangerousEvents/{eventId}": {
+      "schema": "DangerousEvent",
+      "description": "Live security/geofencing/phishing blocks and alerts"
+    },
+    "/users/{userId}/safeZones/{zoneId}": {
+      "schema": "SafeZone",
+      "description": "Geofencing definitions managed by the parent"
+    },
+    "/users/{userId}/chats/{chatId}": {
+      "schema": "ChatMessage",
+      "description": "Grounded AI chat histories with the counselor model"
+    },
+    "/homework/{homeworkId}": {
+      "schema": "Homework",
+      "description": "Child homework task assignments"
+    },
+    "/dailyGoals/{goalId}": {
+      "schema": "DailyGoal",
+      "description": "Child learning hub daily goals"
+    },
+    "/sosAlerts/{alertId}": {
+      "schema": "SosAlert",
+      "description": "Live emergency SOS notifications for parents"
+    }
+  }
+}

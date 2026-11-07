@@ -1,0 +1,10 @@
+{
+  "name": "Remix Guardian AI - Child Safety Platform 2",
+  "description": "An AI-powered child safety and parental control platform featuring real-time tracking, risk score assessment, screen time analytics, and interest discovery.",
+  "requestFramePermissions": [
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

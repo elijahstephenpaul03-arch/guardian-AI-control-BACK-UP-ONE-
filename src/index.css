@@ -1,0 +1,140 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap');
+@import "tailwindcss";
+
+@variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Outfit", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+  
+  --color-brand-deep: #050816;
+  --color-brand-navy: #08111F;
+  --color-cyan-electric: #00E5FF;
+  --color-purple-ai: #7C3AED;
+  --color-blue-electric: #2563EB;
+
+  /* Explicit sRGB palette overrides to ensure browser computed styles return standard hex/rgba animatable by Motion */
+  --color-slate-50: #f8fafc;
+  --color-slate-100: #f1f5f9;
+  --color-slate-200: #e2e8f0;
+  --color-slate-300: #cbd5e1;
+  --color-slate-400: #94a3b8;
+  --color-slate-500: #64748b;
+  --color-slate-600: #475569;
+  --color-slate-700: #334155;
+  --color-slate-800: #1e293b;
+  --color-slate-900: #0f172a;
+  --color-slate-950: #020617;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: #050816;
+  color: #f8fafc;
+  overflow-x: hidden;
+  scroll-behavior: smooth;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-display);
+}
+
+/* Glassmorphism utility classes */
+.glass-panel {
+  background: rgba(8, 17, 31, 0.7);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(0, 229, 255, 0.12);
+}
+
+.glass-card {
+  background: rgba(13, 22, 40, 0.65);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+}
+
+.glass-card-hover {
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.glass-card-hover:hover {
+  transform: translateY(-2px);
+  border-color: rgba(0, 229, 255, 0.35);
+  box-shadow: 0 12px 40px -10px rgba(0, 229, 255, 0.18);
+}
+
+/* Cyber Grid and Holographic Backgrounds */
+.cyber-grid {
+  background-image: 
+    linear-gradient(to right, rgba(0, 229, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(0, 229, 255, 0.03) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+@keyframes pulseGlow {
+  0%, 100% {
+    opacity: 0.4;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.8;
+    transform: scale(1.08);
+  }
+}
+
+.animate-pulse-glow {
+  animation: pulseGlow 4s ease-in-out infinite;
+}
+
+@keyframes orbRotate {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.animate-orb-rotate {
+  animation: orbRotate 12s linear infinite;
+}
+
+/* Glowing text and buttons */
+.glowing-cyan-text {
+  text-shadow: 0 0 12px rgba(0, 229, 255, 0.5);
+}
+
+.glowing-button {
+  box-shadow: 0 0 20px rgba(0, 229, 255, 0.25);
+  transition: all 0.3s ease;
+}
+
+.glowing-button:hover {
+  box-shadow: 0 0 30px rgba(0, 229, 255, 0.5);
+}
+
+/* Leaflet Map Custom Dark Cyber Styling */
+.leaflet-container {
+  font-family: var(--font-sans) !important;
+  background-color: #050816 !important;
+}
+
+.leaflet-popup-content-wrapper {
+  background: rgba(8, 17, 31, 0.95) !important;
+  backdrop-filter: blur(12px) !important;
+  border: 1px solid rgba(0, 229, 255, 0.25) !important;
+  border-radius: 16px !important;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5) !important;
+  color: #f8fafc !important;
+  padding: 0px !important;
+}
+
+.leaflet-popup-tip {
+  background: rgba(8, 17, 31, 0.95) !important;
+}
+
+.custom-leaflet-avatar, .custom-leaflet-zone, .custom-leaflet-draft, .custom-leaflet-user {
+  background: none !important;
+  border: none !important;
+}
+
+
