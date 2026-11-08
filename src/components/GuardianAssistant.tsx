@@ -28,13 +28,33 @@ import {
 interface GuardianAssistantProps {
   viewMode: "public" | "dashboard" | "companion";
   isEmbedded?: boolean;
+  user?: any;
+  userData?: any;
 }
 
-export default function GuardianAssistant({ viewMode, isEmbedded = false }: GuardianAssistantProps) {
+export default function GuardianAssistant({ 
+  viewMode, 
+  isEmbedded = false,
+  user,
+  userData
+}: GuardianAssistantProps) {
+  // Authoritative role check: child accounts or companion view are strictly child mode
+  const authoritativeRole = userData?.role || null;
+  const isChildUser = authoritativeRole === "child" || viewMode === "companion";
+
   const [isOpen, setIsOpen] = useState(isEmbedded); // Default open if embedded
   const [showSidebar, setShowSidebar] = useState(false);
-  const [mode, setMode] = useState<"parent" | "child">("parent");
-  const [currentUid, setCurrentUid] = useState<string>("guest");
+  const [mode, setMode] = useState<"parent" | "child">(isChildUser ? "child" : "parent");
+  const [currentUid, setCurrentUid] = useState<string>(user?.uid || user?.id || "guest");
+
+  // Safe mode switcher that strictly prevents child accounts from switching to parent mode
+  const handleSetMode = (newMode: "parent" | "child") => {
+    if (isChildUser && newMode === "parent") {
+      console.warn("[Guardian Assistant] Security notice: Child accounts are permanently restricted to Child Assistant mode.");
+      return;
+    }
+    setMode(newMode);
+  };
 
   // Conversations state
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -90,19 +110,30 @@ export default function GuardianAssistant({ viewMode, isEmbedded = false }: Guar
 
   // 1. Monitor Auth State & load real telemetry context
   useEffect(() => {
-    const unsubscribe = auth.onAuthStateChanged(async (user) => {
-      if (user) {
-        setCurrentUid(user.uid);
-        fetchRealChildData(user.uid);
-      } else {
+    if (user?.uid || user?.id) {
+      const activeId = user.uid || user.id;
+      setCurrentUid(activeId);
+      if (!isChildUser) {
+        fetchRealChildData(activeId);
+      }
+    }
+
+    const unsubscribe = auth.onAuthStateChanged(async (firebaseUser) => {
+      if (firebaseUser) {
+        setCurrentUid(firebaseUser.uid);
+        if (!isChildUser) {
+          fetchRealChildData(firebaseUser.uid);
+        }
+      } else if (!user) {
         setCurrentUid("guest");
       }
     });
     return () => unsubscribe();
-  }, []);
+  }, [user, isChildUser]);
 
-  // Fetch real telemetry data from Firestore
+  // Fetch real telemetry data from Firestore (only for authorized parents)
   const fetchRealChildData = async (uid: string) => {
+    if (isChildUser) return; // Prevent children from querying parent telemetry
     try {
       // Fetch user profile
       const userDocRef = doc(db, "users", uid);
@@ -120,14 +151,14 @@ export default function GuardianAssistant({ viewMode, isEmbedded = false }: Guar
     }
   };
 
-  // Sync mode with viewMode
+  // Sync mode with viewMode and authoritative role
   useEffect(() => {
-    if (viewMode === "companion") {
+    if (isChildUser) {
       setMode("child");
     } else {
       setMode("parent");
     }
-  }, [viewMode]);
+  }, [viewMode, isChildUser]);
 
   // 2. Subscribe to Conversation List
   useEffect(() => {
@@ -153,8 +184,9 @@ export default function GuardianAssistant({ viewMode, isEmbedded = false }: Guar
 
   // Create initial conversation if none exists
   const initInitialConversation = async (convMode: "parent" | "child") => {
-    const title = convMode === "parent" ? "Family Safety Counsel" : "Learning Companion";
-    const newId = await createConversation(currentUid, title, convMode);
+    const effectiveMode = isChildUser ? "child" : convMode;
+    const title = effectiveMode === "parent" ? "Family Safety Counsel" : "Learning Companion";
+    const newId = await createConversation(currentUid, title, effectiveMode);
     setActiveConvId(newId);
   };
 
@@ -326,8 +358,9 @@ export default function GuardianAssistant({ viewMode, isEmbedded = false }: Guar
   // New Chat Handler
   const handleStartNewChat = async () => {
     stopGenerationOrSpeech();
-    const title = mode === "parent" ? "New Safety Consultation" : "New Learning Chat";
-    const newId = await createConversation(currentUid, title, mode);
+    const effectiveMode = isChildUser ? "child" : mode;
+    const title = effectiveMode === "parent" ? "New Safety Consultation" : "New Learning Chat";
+    const newId = await createConversation(currentUid, title, effectiveMode);
     setActiveConvId(newId);
     setAssistantError(null);
   };
@@ -420,11 +453,11 @@ export default function GuardianAssistant({ viewMode, isEmbedded = false }: Guar
       
       const payload = {
         message: rawMessage,
-        childContext,
+        childContext: isChildUser ? { name: userData?.fullName || "Student", status: "online", hasRealData: false } : childContext,
         history: historyTurns.slice(-12),
-        mode,
-        logs: realLogs,
-        dangerousEvents: realDangerousEvents,
+        mode: isChildUser ? "child" : mode,
+        logs: isChildUser ? [] : realLogs,
+        dangerousEvents: isChildUser ? [] : realDangerousEvents,
         modelName: selectedModel,
         enableSearch,
         enableMaps
@@ -866,22 +899,30 @@ export default function GuardianAssistant({ viewMode, isEmbedded = false }: Guar
           </button>
 
           {/* Mode Switcher */}
-          <div className="flex bg-slate-950 border border-slate-800 rounded-xl p-0.5">
-            <button
-              onClick={() => setMode("parent")}
-              className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase transition cursor-pointer flex items-center gap-1 ${mode === "parent" ? "bg-gradient-to-r from-cyan-600 to-indigo-600 text-white shadow" : "text-slate-400 hover:text-white"}`}
-            >
-              <Shield className="h-3 w-3" />
-              Parent
-            </button>
-            <button
-              onClick={() => setMode("child")}
-              className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase transition cursor-pointer flex items-center gap-1 ${mode === "child" ? "bg-gradient-to-r from-teal-600 to-emerald-600 text-white shadow" : "text-slate-400 hover:text-white"}`}
-            >
-              <User className="h-3 w-3" />
-              Child
-            </button>
-          </div>
+          {isChildUser ? (
+            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-teal-950/80 border border-teal-500/30 text-[10px] font-bold uppercase text-teal-300 shadow-sm">
+              <span className="h-2 w-2 rounded-full bg-teal-400 animate-pulse" />
+              <User className="h-3.5 w-3.5 text-teal-400" />
+              <span>Child Safety Assistant</span>
+            </div>
+          ) : (
+            <div className="flex bg-slate-950 border border-slate-800 rounded-xl p-0.5">
+              <button
+                onClick={() => handleSetMode("parent")}
+                className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase transition cursor-pointer flex items-center gap-1 ${mode === "parent" ? "bg-gradient-to-r from-cyan-600 to-indigo-600 text-white shadow" : "text-slate-400 hover:text-white"}`}
+              >
+                <Shield className="h-3 w-3" />
+                Parent
+              </button>
+              <button
+                onClick={() => handleSetMode("child")}
+                className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase transition cursor-pointer flex items-center gap-1 ${mode === "child" ? "bg-gradient-to-r from-teal-600 to-emerald-600 text-white shadow" : "text-slate-400 hover:text-white"}`}
+              >
+                <User className="h-3 w-3" />
+                Child
+              </button>
+            </div>
+          )}
 
           {!isEmbedded && (
             <button

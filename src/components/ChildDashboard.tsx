@@ -11,6 +11,18 @@ import {
 import { openExternalLink, renderTextWithLinks, ensureAbsoluteUrl, copyLinkToClipboard } from "../lib/linkUtils";
 import GuardianAssistant from "./GuardianAssistant";
 import { HomeworkTask, DailyGoal, FamilyData, FamilyRequest, SosAlert } from "../types";
+import { 
+  CYBER_QUIZ_BANK, 
+  CATEGORY_LABELS, 
+  QuizQuestion, 
+  QuizCategory 
+} from "../data/cyberQuizBank";
+import { 
+  fetchChildQuizProgress, 
+  recordQuizAnswer, 
+  getNextQuizQuestion, 
+  ChildQuizProgress 
+} from "../lib/cyberQuizEngine";
 
 interface ChildDashboardProps {
   user: any;
@@ -208,23 +220,84 @@ export default function ChildDashboard({
     }
   };
 
-  // Quiz state
+  // Cyber-Smart Adaptive Quiz Engine State
+  const effectiveChildId = user?.uid || user?.id || "guest-child";
+  const [quizProgress, setQuizProgress] = useState<ChildQuizProgress | null>(null);
+  const [currentQuizQuestion, setCurrentQuizQuestion] = useState<QuizQuestion | null>(null);
   const [quizAnswered, setQuizAnswered] = useState(false);
   const [selectedAnswer, setSelectedAnswer] = useState<number | null>(null);
-  const quizQuestion = {
-    question: "A website is offering 10,000 free in-game coins, but asks you to sign in with your password and username. What is the safest thing to do?",
-    options: [
-      { text: "Sign in immediately to get the coins before the offer ends.", isCorrect: false },
-      { text: "Never share your password! Report it to your parents or a trusted adult.", isCorrect: true },
-      { text: "Create a fake account and sign in to test if it is real.", isCorrect: false }
-    ],
-    hint: "Real gaming sites will never ask for your password on third-party links."
-  };
+  const [isAnsweringQuiz, setIsAnsweringQuiz] = useState(false);
+  const [lastQuizResult, setLastQuizResult] = useState<{
+    isCorrect: boolean;
+    leveledUp: boolean;
+    leveledDown: boolean;
+    xpEarned: number;
+  } | null>(null);
 
-  const handleSelectQuizOption = (idx: number) => {
-    if (quizAnswered) return;
+  // Optional interactive follow-up question
+  const [followUpAnswered, setFollowUpAnswered] = useState(false);
+  const [selectedFollowUpIdx, setSelectedFollowUpIdx] = useState<number | null>(null);
+
+  // Load quiz progress and initial non-repeating question
+  useEffect(() => {
+    let mounted = true;
+    async function loadQuizState() {
+      try {
+        const progress = await fetchChildQuizProgress(effectiveChildId);
+        if (!mounted) return;
+        setQuizProgress(progress);
+        const nextQ = getNextQuizQuestion(progress);
+        setCurrentQuizQuestion(nextQ);
+        setQuizAnswered(false);
+        setSelectedAnswer(null);
+        setLastQuizResult(null);
+        setFollowUpAnswered(false);
+        setSelectedFollowUpIdx(null);
+      } catch (err) {
+        console.warn("[ChildDashboard] Error loading cyber quiz:", err);
+      }
+    }
+    loadQuizState();
+    return () => {
+      mounted = false;
+    };
+  }, [effectiveChildId]);
+
+  const handleSelectQuizOption = async (idx: number) => {
+    if (quizAnswered || isAnsweringQuiz || !currentQuizQuestion || !quizProgress) return;
+    setIsAnsweringQuiz(true);
     setSelectedAnswer(idx);
     setQuizAnswered(true);
+
+    try {
+      const result = await recordQuizAnswer(effectiveChildId, currentQuizQuestion, idx, quizProgress);
+      const xpEarned = result.isCorrect 
+        ? (currentQuizQuestion.difficulty === 3 ? 250 : currentQuizQuestion.difficulty === 2 ? 200 : 150)
+        : 25;
+      
+      setQuizProgress(result.updatedProgress);
+      setLastQuizResult({
+        isCorrect: result.isCorrect,
+        leveledUp: result.leveledUp,
+        leveledDown: result.leveledDown,
+        xpEarned
+      });
+    } catch (e) {
+      console.warn("Error recording quiz answer:", e);
+    } finally {
+      setIsAnsweringQuiz(false);
+    }
+  };
+
+  const handleNextQuizQuestion = () => {
+    if (!quizProgress) return;
+    const nextQ = getNextQuizQuestion(quizProgress, currentQuizQuestion?.id);
+    setCurrentQuizQuestion(nextQ);
+    setQuizAnswered(false);
+    setSelectedAnswer(null);
+    setLastQuizResult(null);
+    setFollowUpAnswered(false);
+    setSelectedFollowUpIdx(null);
   };
 
   const childName = userData?.fullName || user?.displayName || "Young Champion";
@@ -625,63 +698,258 @@ export default function ChildDashboard({
                     </div>
                   </div>
 
-                  {/* Daily Cyber Safety Quiz */}
+                  {/* Daily Cyber Safety Adaptive Quiz */}
                   <div className="bg-slate-900/50 backdrop-blur-md border border-slate-800 rounded-3xl p-5 space-y-4">
-                    <div className="flex items-center justify-between border-b border-slate-800/80 pb-3">
-                      <div className="flex items-center space-x-2">
-                        <Gamepad2 className="h-5 w-5 text-teal-400" />
-                        <h3 className="text-xs font-mono uppercase tracking-wider font-bold text-slate-300">Daily Cyber-Smart Challenge</h3>
-                      </div>
-                      <span className="text-[10px] font-mono bg-teal-500/15 text-teal-400 px-2.5 py-0.5 rounded-full border border-teal-500/25">+150 XP Reward</span>
-                    </div>
-
-                    <div className="space-y-3.5">
-                      <p className="text-xs font-semibold text-white leading-relaxed">
-                        {quizQuestion.question}
-                      </p>
-
-                      <div className="space-y-2">
-                        {quizQuestion.options.map((option, idx) => {
-                          let btnStyle = "border-slate-800 bg-slate-950/60 hover:border-slate-700 hover:bg-slate-900/30 text-slate-300";
-                          if (quizAnswered) {
-                            if (option.isCorrect) {
-                              btnStyle = "bg-emerald-500/10 border-emerald-500 text-emerald-400";
-                            } else if (selectedAnswer === idx) {
-                              btnStyle = "bg-rose-500/10 border-rose-500 text-rose-400";
-                            } else {
-                              btnStyle = "border-slate-800 opacity-40 bg-slate-950/20 text-slate-500";
-                            }
-                          }
-
-                          return (
-                            <button
-                              key={idx}
-                              onClick={() => handleSelectQuizOption(idx)}
-                              disabled={quizAnswered}
-                              className={`w-full text-left p-3.5 rounded-2xl text-xs font-medium border flex items-start gap-3 transition cursor-pointer ${btnStyle}`}
-                            >
-                              <span className="h-5 w-5 rounded-md bg-slate-900 flex items-center justify-center font-mono font-bold shrink-0 text-slate-400 border border-slate-800">
-                                {String.fromCharCode(65 + idx)}
+                    {currentQuizQuestion ? (
+                      <>
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-800/80 pb-3 gap-2">
+                          <div className="flex items-center space-x-2">
+                            <Gamepad2 className="h-5 w-5 text-teal-400" />
+                            <div>
+                              <h3 className="text-xs font-mono uppercase tracking-wider font-bold text-slate-300">
+                                Cyber-Smart Challenge
+                              </h3>
+                              <span className="text-[10px] text-teal-400/90 font-mono">
+                                {CATEGORY_LABELS[currentQuizQuestion.category] || "Online Safety"}
                               </span>
-                              <span className="leading-normal">{option.text}</span>
-                            </button>
-                          );
-                        })}
-                      </div>
+                            </div>
+                          </div>
+                          
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            {/* Difficulty Level Badge */}
+                            <span className={`text-[10px] font-mono px-2.5 py-0.5 rounded-full border font-bold ${
+                              currentQuizQuestion.difficulty === 3
+                                ? "bg-amber-500/15 text-amber-300 border-amber-500/30"
+                                : currentQuizQuestion.difficulty === 2
+                                ? "bg-indigo-500/15 text-indigo-300 border-indigo-500/30"
+                                : "bg-teal-500/15 text-teal-300 border-teal-500/30"
+                            }`}>
+                              Level {currentQuizQuestion.difficulty}: {
+                                currentQuizQuestion.difficulty === 3 ? "Advanced" :
+                                currentQuizQuestion.difficulty === 2 ? "Intermediate" : "Beginner"
+                              }
+                            </span>
 
-                      {quizAnswered && (
-                        <motion.div 
-                          initial={{ opacity: 0, y: 10 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          className="p-3.5 bg-slate-950 border border-slate-800 rounded-xl flex items-start gap-2.5 text-[11px]"
-                        >
-                          <HelpCircle className="h-4 w-4 text-cyan-400 shrink-0 mt-0.5" />
-                          <p className="text-slate-400 leading-normal">
-                            <span className="font-bold text-cyan-300">Explanation:</span> {quizQuestion.hint}
+                            {/* XP Reward Badge */}
+                            <span className="text-[10px] font-mono bg-teal-500/15 text-teal-400 px-2.5 py-0.5 rounded-full border border-teal-500/25 font-bold">
+                              +{currentQuizQuestion.difficulty === 3 ? 250 : currentQuizQuestion.difficulty === 2 ? 200 : 150} XP
+                            </span>
+
+                            {/* Streak Pill */}
+                            {(quizProgress?.streak || 0) > 0 && (
+                              <span className="text-[10px] font-mono bg-amber-500/15 text-amber-300 px-2 py-0.5 rounded-full border border-amber-500/25 flex items-center gap-1 font-bold">
+                                <Flame className="h-3 w-3 text-amber-400" />
+                                {quizProgress?.streak} Streak
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Question and Real-World Context */}
+                        <div className="space-y-3.5">
+                          {currentQuizQuestion.scenario && (
+                            <div className="p-3 bg-slate-950/70 border border-slate-800 rounded-xl text-xs text-slate-300 italic flex items-start gap-2">
+                              <HelpCircle className="h-4 w-4 text-teal-400 shrink-0 mt-0.5" />
+                              <p><span className="font-semibold text-teal-300">Scenario:</span> {currentQuizQuestion.scenario}</p>
+                            </div>
+                          )}
+
+                          <p className="text-xs font-semibold text-white leading-relaxed">
+                            {currentQuizQuestion.question}
                           </p>
-                        </motion.div>
-                      )}
-                    </div>
+
+                          {/* Options List */}
+                          <div className="space-y-2">
+                            {currentQuizQuestion.options.map((option, idx) => {
+                              let btnStyle = "border-slate-800 bg-slate-950/60 hover:border-slate-700 hover:bg-slate-900/30 text-slate-300";
+                              if (quizAnswered) {
+                                if (option.isCorrect) {
+                                  btnStyle = "bg-emerald-500/15 border-emerald-500 text-emerald-300 font-bold shadow-md shadow-emerald-500/10";
+                                } else if (selectedAnswer === idx) {
+                                  btnStyle = "bg-rose-500/15 border-rose-500 text-rose-300 font-bold shadow-md shadow-rose-500/10";
+                                } else {
+                                  btnStyle = "border-slate-800/60 opacity-40 bg-slate-950/20 text-slate-500";
+                                }
+                              }
+
+                              return (
+                                <button
+                                  key={idx}
+                                  onClick={() => handleSelectQuizOption(idx)}
+                                  disabled={quizAnswered || isAnsweringQuiz}
+                                  className={`w-full text-left p-3.5 rounded-2xl text-xs font-medium border flex items-start gap-3 transition cursor-pointer ${btnStyle}`}
+                                >
+                                  <span className={`h-5 w-5 rounded-md flex items-center justify-center font-mono font-bold shrink-0 text-xs border ${
+                                    quizAnswered && option.isCorrect
+                                      ? "bg-emerald-500 text-slate-950 border-emerald-400"
+                                      : quizAnswered && selectedAnswer === idx
+                                      ? "bg-rose-500 text-white border-rose-400"
+                                      : "bg-slate-900 text-slate-400 border-slate-800"
+                                  }`}>
+                                    {String.fromCharCode(65 + idx)}
+                                  </span>
+                                  <span className="leading-normal flex-1">{option.text}</span>
+                                  {quizAnswered && option.isCorrect && (
+                                    <Check className="h-4 w-4 text-emerald-400 shrink-0 ml-1" />
+                                  )}
+                                </button>
+                              );
+                            })}
+                          </div>
+
+                          {/* Comprehensive Explanations & Adaptive Insights */}
+                          {quizAnswered && (
+                            <motion.div 
+                              initial={{ opacity: 0, y: 10 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              className="space-y-3 pt-2"
+                            >
+                              {/* Outcome Alert */}
+                              <div className={`p-3 rounded-xl border flex items-center justify-between text-xs font-bold ${
+                                lastQuizResult?.isCorrect
+                                  ? "bg-emerald-500/15 border-emerald-500/30 text-emerald-300"
+                                  : "bg-rose-500/15 border-rose-500/30 text-rose-300"
+                              }`}>
+                                <div className="flex items-center space-x-2">
+                                  {lastQuizResult?.isCorrect ? (
+                                    <Sparkles className="h-4 w-4 text-emerald-400" />
+                                  ) : (
+                                    <ShieldAlert className="h-4 w-4 text-rose-400" />
+                                  )}
+                                  <span>
+                                    {lastQuizResult?.isCorrect 
+                                      ? `Correct! Safe decision made! (+${lastQuizResult?.xpEarned || 150} XP)` 
+                                      : "Safety Warning! That choice could put your accounts or data at risk. (+25 XP for reviewing)"}
+                                  </span>
+                                </div>
+                                {lastQuizResult?.leveledUp && (
+                                  <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded-full bg-teal-500/20 text-teal-300 border border-teal-500/30">
+                                    Promoted to Level {quizProgress?.currentLevel}!
+                                  </span>
+                                )}
+                              </div>
+
+                              {/* Why safe / Why unsafe breakdown */}
+                              <div className="p-4 bg-slate-950/90 border border-slate-800 rounded-2xl space-y-2.5 text-xs">
+                                <div>
+                                  <span className="font-bold text-emerald-400 block mb-0.5">
+                                    Why this option is safe:
+                                  </span>
+                                  <p className="text-slate-300 leading-relaxed text-[11.5px]">
+                                    {currentQuizQuestion.explanation.whyCorrectSafe}
+                                  </p>
+                                </div>
+
+                                <div>
+                                  <span className="font-bold text-amber-400 block mb-0.5">
+                                    Why other choices are risky:
+                                  </span>
+                                  <p className="text-slate-400 leading-relaxed text-[11.5px]">
+                                    {currentQuizQuestion.explanation.otherOptionsUnsafe}
+                                  </p>
+                                </div>
+
+                                {selectedAnswer !== null && !currentQuizQuestion.options[selectedAnswer]?.isCorrect && currentQuizQuestion.options[selectedAnswer]?.unsafeReason && (
+                                  <div className="p-2.5 rounded-xl bg-rose-950/30 border border-rose-500/20 text-rose-300 text-[11px]">
+                                    <span className="font-bold">Your selected choice was unsafe because: </span>
+                                    {currentQuizQuestion.options[selectedAnswer]?.unsafeReason}
+                                  </div>
+                                )}
+
+                                <div>
+                                  <span className="font-bold text-cyan-400 block mb-0.5">
+                                    Real-World Safety Example:
+                                  </span>
+                                  <p className="text-slate-400 leading-relaxed text-[11px] italic">
+                                    "{currentQuizQuestion.explanation.realWorldExample}"
+                                  </p>
+                                </div>
+                              </div>
+
+                              {/* Optional Interactive Follow-Up Question */}
+                              {currentQuizQuestion.explanation.followUpQuestion && (
+                                <div className="p-4 bg-slate-950/60 border border-slate-800 rounded-2xl space-y-2.5">
+                                  <div className="flex items-center space-x-2 text-teal-300 text-xs font-bold font-mono">
+                                    <Sparkles className="h-3.5 w-3.5 text-teal-400" />
+                                    <span>Quick Follow-up Challenge</span>
+                                  </div>
+                                  <p className="text-xs text-slate-300">
+                                    {(currentQuizQuestion.explanation.followUpQuestion as any).question || (currentQuizQuestion.explanation.followUpQuestion as any).prompt}
+                                  </p>
+
+                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                                    {currentQuizQuestion.explanation.followUpQuestion.options.map((fOption, fIdx) => {
+                                      const isCorrectOption = fIdx === currentQuizQuestion.explanation.followUpQuestion?.correctIndex;
+                                      let fBtnStyle = "border-slate-800 bg-slate-900/60 hover:bg-slate-850 text-slate-300";
+                                      if (followUpAnswered) {
+                                        if (isCorrectOption) {
+                                          fBtnStyle = "bg-emerald-500/20 border-emerald-500 text-emerald-300 font-bold";
+                                        } else if (selectedFollowUpIdx === fIdx) {
+                                          fBtnStyle = "bg-rose-500/20 border-rose-500 text-rose-300";
+                                        } else {
+                                          fBtnStyle = "opacity-40 text-slate-500 border-slate-800";
+                                        }
+                                      }
+
+                                      return (
+                                        <button
+                                          key={fIdx}
+                                          disabled={followUpAnswered}
+                                          onClick={() => {
+                                            setFollowUpAnswered(true);
+                                            setSelectedFollowUpIdx(fIdx);
+                                          }}
+                                          className={`text-left p-2.5 rounded-xl border text-[11px] transition cursor-pointer ${fBtnStyle}`}
+                                        >
+                                          {fOption}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+
+                                  {followUpAnswered && (
+                                    <p className="text-[10.5px] text-teal-300/90 pt-1 leading-normal italic">
+                                      Tip: {(currentQuizQuestion.explanation.followUpQuestion as any).quickExplanation || (currentQuizQuestion.explanation.followUpQuestion as any).explanation}
+                                    </p>
+                                  )}
+                                </div>
+                              )}
+
+                              {/* Progress & Weak Concept Guidance */}
+                              {quizProgress && quizProgress.weakConcepts && quizProgress.weakConcepts.length > 0 && (
+                                <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl flex items-center justify-between text-xs text-amber-300">
+                                  <div className="flex items-center space-x-2">
+                                    <ShieldAlert className="h-4 w-4 text-amber-400 shrink-0" />
+                                    <span>
+                                      Practice Area: {quizProgress.weakConcepts.slice(0, 2).map(c => CATEGORY_LABELS[c] || c).join(", ")}
+                                    </span>
+                                  </div>
+                                  <span className="text-[10px] font-mono text-amber-400">Adaptive Coaching</span>
+                                </div>
+                              )}
+
+                              {/* Next Question Rotation Action Button */}
+                              <div className="pt-2 flex items-center justify-between">
+                                <span className="text-[11px] text-slate-500 font-mono">
+                                  Cycle: #{quizProgress?.currentCycle || 1} • {quizProgress?.correctCount || 0} Solved
+                                </span>
+                                <button
+                                  onClick={handleNextQuizQuestion}
+                                  className="px-4 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-400 text-slate-950 text-xs font-bold transition cursor-pointer flex items-center space-x-1.5 shadow-lg shadow-teal-500/20"
+                                >
+                                  <span>Next Challenge</span>
+                                  <ChevronRight className="h-4 w-4" />
+                                </button>
+                              </div>
+                            </motion.div>
+                          )}
+                        </div>
+                      </>
+                    ) : (
+                      <div className="text-center py-6 text-slate-400 text-xs">
+                        Loading Cyber-Smart Challenge...
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -697,7 +965,7 @@ export default function ChildDashboard({
                     </div>
                   </div>
                   <div className="flex-1 overflow-hidden">
-                    <GuardianAssistant viewMode="companion" isEmbedded={true} />
+                    <GuardianAssistant viewMode="companion" isEmbedded={true} user={user} userData={userData} />
                   </div>
                 </div>
               </div>

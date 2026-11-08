@@ -1,5 +1,5 @@
 import { createClient, SupabaseClient, User as SupabaseUser, Session } from "@supabase/supabase-js";
-import { UserRole, ChildDevice } from "../types";
+import { UserRole, ChildDevice, ChildProfile } from "../types";
 
 // ==============================================================================
 // GUARDIAN AI: INDEPENDENT SUPABASE EDITION - CLIENT & AUTHENTICATION (PHASE 2)
@@ -64,6 +64,7 @@ export interface NormalizedAuthUser {
 export interface UserProfilePayload {
   role: UserRole;
   fullName: string;
+  displayName?: string | null;
   email: string;
   status: "active" | "disabled";
   disabled: boolean;
@@ -275,11 +276,13 @@ export function normalizeAuthError(err: any): Error & { code?: string; status?: 
 // Normalizes a Supabase user into a consistent shape matching existing UI expectations
 export function normalizeUser(user: SupabaseUser | null): NormalizedAuthUser | null {
   if (!user) return null;
+  const meta = user.user_metadata || {};
+  const metaName = (meta.full_name as string) || (meta.fullName as string) || (meta.name as string) || (meta.display_name as string) || null;
   return {
     uid: user.id,
     id: user.id,
     email: user.email || "",
-    displayName: (user.user_metadata?.full_name as string) || (user.user_metadata?.fullName as string) || user.email || "Guardian User",
+    displayName: metaName,
     emailVerified: Boolean(user.email_confirmed_at),
     rawSupabaseUser: user,
   };
@@ -311,9 +314,12 @@ export async function fetchUserProfile(userId: string): Promise<UserProfilePaylo
     if (!data) return null;
 
     const row = data as PublicUserRow;
+    const cleanFullName = row.full_name?.trim() || "";
+    const cleanDisplayName = row.display_name?.trim() || null;
     return {
       role: row.role,
-      fullName: row.full_name || row.display_name || row.email,
+      fullName: cleanFullName || cleanDisplayName || "",
+      displayName: cleanDisplayName,
       email: row.email,
       status: row.disabled ? "disabled" : "active",
       disabled: Boolean(row.disabled),
@@ -1210,48 +1216,111 @@ export async function registerChildDeviceInSupabase(params: RegisterDeviceParams
 
   let effectiveChildId = params.childId;
   let effectiveParentId = params.parentId;
-  let effectiveFamilyCode: string | null = null;
 
   if (callerProfile.role === "child") {
     // 1. child_id must strictly equal auth.uid() for Child registrations
     effectiveChildId = callerUid;
 
-    // 7. Unlinked child account must be rejected
-    if (!callerProfile.parentId) {
+    // 7. Unlinked child account must be rejected: must have parentId AND familyCode
+    if (!callerProfile.parentId || !callerProfile.familyCode) {
       throw new Error("Unlinked child account cannot register companion devices. Connect to a family first.");
     }
 
-    // 2 & 4. parent_id must be derived from or verified against authoritative public.users.parent_id
+    // 2 & 4 & 6. parent_id must be derived authoritatively from public.users (never trust client)
     effectiveParentId = callerProfile.parentId;
-
-    // 3. family_code must match child's actual linked family
-    effectiveFamilyCode = callerProfile.familyCode || null;
   } else if (callerProfile.role === "parent") {
+    // 1. Guard: Parent cannot register device for themselves
+    if (!params.childId || params.childId === callerUid) {
+      throw new Error("Parent accounts cannot register companion devices for themselves. Device registration is reserved for linked children.");
+    }
+    // Verify child belongs to this parent
+    const targetChildProfile = await fetchUserProfile(params.childId);
+    if (!targetChildProfile || targetChildProfile.parentId !== callerUid) {
+      throw new Error("Permission denied: Parents can only manage devices for their verified linked children.");
+    }
+    effectiveChildId = params.childId;
     effectiveParentId = callerUid;
-    effectiveFamilyCode = callerProfile.familyCode || null;
+  } else if (callerProfile.role === "admin") {
+    effectiveChildId = params.childId || callerUid;
+    effectiveParentId = params.parentId || callerUid;
   }
 
+  // 4 & 5. Device ID Scoping & Ownership Conflict Resolution
+  // Scope device key per child account to prevent cross-account device_id collisions in localStorage
+  const childScopedKey = `GUA_DEVICE_ID_${effectiveChildId}`;
   let devId = params.deviceId;
   if (!devId && typeof window !== "undefined") {
-    devId = localStorage.getItem("GUA_DEVICE_ID") || undefined;
+    devId = localStorage.getItem(childScopedKey) || undefined;
+    if (!devId) {
+      const legacyDevId = localStorage.getItem("GUA_DEVICE_ID");
+      if (legacyDevId) {
+        devId = legacyDevId;
+      }
+    }
   }
+
+  // Pre-flight check: if devId exists, determine if it is an INSERT or UPDATE,
+  // and ensure it does not belong to a different child/parent
+  let isUpdate = false;
+  if (devId) {
+    try {
+      const { data: existingDevice } = await (supabase as any)
+        .from("devices")
+        .select("device_id, child_id, parent_id")
+        .eq("device_id", devId)
+        .maybeSingle();
+
+      if (existingDevice) {
+        if ((existingDevice as any).child_id === effectiveChildId) {
+          isUpdate = true;
+        } else {
+          // Device ID exists but belongs to a different child/parent!
+          // Discard foreign device ID to prevent 42501 RLS update policy violation
+          devId = undefined;
+          if (typeof window !== "undefined") {
+            try {
+              localStorage.removeItem("GUA_DEVICE_ID");
+              localStorage.removeItem(childScopedKey);
+            } catch (_) {}
+          }
+        }
+      }
+    } catch (_) {
+      // Non-fatal pre-flight check failure
+    }
+  }
+
   if (!devId) {
     const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-    let code = "DEV-";
-    for (let i = 0; i < 6; i++) {
-      code += chars.charAt(Math.floor(Math.random() * chars.length));
+    const childPrefix = effectiveChildId.replace(/-/g, "").slice(0, 4).toUpperCase();
+    let randomSuffix = "";
+    for (let i = 0; i < 4; i++) {
+      randomSuffix += chars.charAt(Math.floor(Math.random() * chars.length));
     }
+    devId = `DEV-${childPrefix}-${randomSuffix}`;
     if (typeof window !== "undefined") {
       try {
-        localStorage.setItem("GUA_DEVICE_ID", code);
+        localStorage.setItem(childScopedKey, devId);
+        localStorage.setItem("GUA_DEVICE_ID", devId);
       } catch (_) {}
     }
-    devId = code;
   }
+
+  // Safe Diagnostic Logging (Never log access tokens or secrets)
+  console.info("[Guardian AI - Device Registration Audit]", {
+    authUid: callerUid,
+    role: callerProfile.role,
+    childId: effectiveChildId,
+    parentId: effectiveParentId,
+    deviceId: devId,
+    operation: isUpdate ? "UPDATE" : "INSERT",
+  });
 
   const nowIso = new Date().toISOString();
   const devName = params.deviceName || `${params.deviceType ? params.deviceType.charAt(0).toUpperCase() + params.deviceType.slice(1) : "Companion"} Device`;
 
+  // Upsert payload contains only verified, actual columns of public.devices:
+  // device_id, device_name, device_model, android_version, battery, charging, online, gps, screen_on, last_seen, connection_quality, sos_active, parent_id, child_id, updated_at
   const row = {
     device_id: devId,
     device_name: devName,
@@ -1267,13 +1336,39 @@ export async function registerChildDeviceInSupabase(params: RegisterDeviceParams
     sos_active: false,
     parent_id: effectiveParentId,
     child_id: effectiveChildId,
-    family_code: effectiveFamilyCode,
     updated_at: nowIso,
   };
 
-  const { error } = await (supabase as any)
+  let { error } = await (supabase as any)
     .from("devices")
     .upsert(row, { onConflict: "device_id" });
+
+  // Self-healing: if an RLS 42501 error occurs due to a hidden foreign device_id conflict
+  if (error && (error.code === "42501" || error.message?.includes("row-level security"))) {
+    console.warn("[registerChildDeviceInSupabase] Caught RLS 42501 on device_id conflict. Regenerating fresh child-scoped device ID and retrying...", {
+      previousDeviceId: devId,
+      childId: effectiveChildId,
+    });
+    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    let freshSuffix = "";
+    for (let i = 0; i < 4; i++) {
+      freshSuffix += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    const freshDevId = `DEV-${effectiveChildId.replace(/-/g, "").slice(0, 4).toUpperCase()}-${Date.now().toString(36).toUpperCase()}-${freshSuffix}`;
+    devId = freshDevId;
+    row.device_id = freshDevId;
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.setItem(childScopedKey, freshDevId);
+        localStorage.setItem("GUA_DEVICE_ID", freshDevId);
+      } catch (_) {}
+    }
+
+    const retryRes = await (supabase as any)
+      .from("devices")
+      .upsert(row, { onConflict: "device_id" });
+    error = retryRes.error;
+  }
 
   if (error) {
     console.error("[registerChildDeviceInSupabase] Error registering device in Supabase:", error);
@@ -1325,6 +1420,110 @@ export async function fetchDevicesFromSupabase(parentOrChildId: string): Promise
     parentId: d.parent_id,
     createdAt: d.updated_at,
   }));
+}
+
+/**
+ * Fetches authoritative linked child accounts and profiles for an authenticated parent.
+ * Strictly relies on Supabase authenticated RLS session (parent_id = auth.uid()).
+ * Never uses service-role key or bypasses security policies.
+ * Uses the real Child account name first, then profile metadata, then email prefix.
+ */
+export async function fetchLinkedChildProfilesForParent(parentUid: string): Promise<ChildProfile[]> {
+  if (!isSupabaseConfigured || !parentUid) return [];
+
+  try {
+    // 1. Query linked child accounts from public.users using authoritative parent_id relationship
+    const { data: childUsers, error: usersErr } = await (supabase as any)
+      .from("users")
+      .select("id, email, full_name, display_name, role, parent_id, family_code, disabled, created_at, updated_at")
+      .eq("parent_id", parentUid)
+      .eq("role", "child")
+      .order("created_at", { ascending: true });
+
+    if (usersErr) {
+      console.warn("[fetchLinkedChildProfilesForParent] Warning fetching child users:", usersErr.message);
+      return [];
+    }
+
+    if (!childUsers || childUsers.length === 0) {
+      return [];
+    }
+
+    // 2. Query optional metadata from public.child_profiles
+    const { data: childMetaList, error: metaErr } = await (supabase as any)
+      .from("child_profiles")
+      .select("*")
+      .eq("parent_id", parentUid);
+
+    if (metaErr) {
+      console.warn("[fetchLinkedChildProfilesForParent] Notice fetching child_profiles metadata:", metaErr.message);
+    }
+
+    // 3. Query companion devices from public.devices
+    let devicesList: ChildDevice[] = [];
+    try {
+      devicesList = await fetchDevicesFromSupabase(parentUid);
+    } catch (devErr) {
+      console.warn("[fetchLinkedChildProfilesForParent] Notice fetching devices:", devErr);
+    }
+
+    const defaultAvatars = [
+      "https://images.unsplash.com/photo-1544717305-2782549b5136?auto=format&fit=crop&q=80&w=200",
+      "https://images.unsplash.com/photo-1519085360753-af0119f7cbe7?auto=format&fit=crop&q=80&w=200",
+      "https://images.unsplash.com/photo-1438761681033-6461ffad8d80?auto=format&fit=crop&q=80&w=200",
+      "https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=200",
+    ];
+
+    // 4. Map authoritative child users to ChildProfile interface
+    return childUsers.map((u: any, index: number): ChildProfile => {
+      const meta = (childMetaList || []).find((m: any) => m.child_user_id === u.id || m.id === u.id);
+      const childDevices = devicesList.filter((d: ChildDevice) => d.childId === u.id);
+
+      // Name resolution order:
+      // Real Child account name first (full_name / display_name), then profile metadata, then email prefix
+      const emailPrefix = u.email ? u.email.split("@")[0] : "";
+      const capitalizedPrefix = emailPrefix ? emailPrefix.charAt(0).toUpperCase() + emailPrefix.slice(1) : "";
+      const resolvedName = 
+        (u.full_name && u.full_name.trim().length > 0 ? u.full_name.trim() : null) || 
+        (u.display_name && u.display_name.trim().length > 0 ? u.display_name.trim() : null) || 
+        (meta?.name && meta.name.trim().length > 0 ? meta.name.trim() : null) || 
+        capitalizedPrefix || 
+        `Child ${index + 1}`;
+
+      const primaryDevice = childDevices[0];
+      const deviceLabel = primaryDevice 
+        ? `${primaryDevice.name} (${primaryDevice.model || primaryDevice.type})` 
+        : (meta?.device_name || "Companion Device");
+
+      const resolvedAvatar = (meta?.avatar && (meta.avatar.startsWith("http://") || meta.avatar.startsWith("https://") || meta.avatar.startsWith("data:")))
+        ? meta.avatar
+        : defaultAvatars[index % defaultAvatars.length];
+
+      return {
+        id: u.id,
+        name: resolvedName,
+        age: meta?.age ?? 10,
+        avatar: resolvedAvatar,
+        device: deviceLabel,
+        deviceId: primaryDevice?.id,
+        battery: primaryDevice?.battery ?? 88,
+        status: meta?.device_locked ? "locked" : (primaryDevice?.status === "online" ? "online" : "offline"),
+        screenTimeLimit: meta?.screen_time_limit ?? 120,
+        screenTimeToday: meta?.screen_time_used ?? 0,
+        riskScore: 0,
+        lastSeenLocation: {
+          lat: 17.4849,
+          lng: 78.3907,
+          name: "Safe Perimeter Zone",
+          timestamp: primaryDevice?.lastActive ? `Active ${primaryDevice.lastActive}` : "Recently active",
+        },
+        devices: childDevices,
+      };
+    });
+  } catch (err) {
+    console.error("[fetchLinkedChildProfilesForParent] Unexpected error fetching linked child profiles:", err);
+    return [];
+  }
 }
 
 

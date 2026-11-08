@@ -24,6 +24,7 @@ import GuardianAssistant from "./GuardianAssistant";
 import ActivityLogComponent from "./ActivityLog";
 import { db } from "../lib/firebase";
 import { doc, getDoc, setDoc } from "firebase/firestore";
+import { supabase, isSupabaseConfigured } from "../lib/supabase";
 
 // Motion animation variants for fluid tab transitions, staggered card reveals, and exit animations
 const containerVariants = {
@@ -105,6 +106,7 @@ export default function Dashboard({ syncProps, activeTabFromUrl }: DashboardProp
   const sync = syncProps || localSync;
   const {
     user,
+    userData,
     profiles,
     logs,
     dangerousEvents,
@@ -130,6 +132,93 @@ export default function Dashboard({ syncProps, activeTabFromUrl }: DashboardProp
     removeChildFromFamily,
     removeDevice
   } = sync;
+
+  // Direct fallback to fetch authoritative profile from public.users if not yet loaded in sync state
+  const [dbParentProfile, setDbParentProfile] = useState<{ full_name?: string | null; display_name?: string | null } | null>(null);
+
+  useEffect(() => {
+    const targetUid = user?.uid || user?.id;
+    if (targetUid && isSupabaseConfigured) {
+      (supabase as any)
+        .from("users")
+        .select("full_name, display_name")
+        .eq("id", targetUid)
+        .maybeSingle()
+        .then(({ data, error }: any) => {
+          if (!error && data) {
+            setDbParentProfile(data);
+          }
+        });
+    } else {
+      setDbParentProfile(null);
+    }
+  }, [user?.uid, user?.id]);
+
+  // Resolve Parent's display name with authoritative priority:
+  // 1. full_name (from authoritative public.users profile in userData or dbParentProfile)
+  // 2. display_name (from authoritative public.users profile)
+  // 3. Auth profile name (session user displayName or user_metadata)
+  // 4. Email prefix as final fallback
+  const getParentDisplayName = (): string => {
+    // 1. Authoritative public.users profile full_name
+    const fullName = (
+      sync.userData?.fullName || 
+      (sync.userData as any)?.full_name || 
+      dbParentProfile?.full_name
+    )?.trim();
+    if (fullName && fullName.length > 0) {
+      return fullName;
+    }
+
+    // 2. Authoritative public.users profile display_name
+    const displayName = (
+      (sync.userData as any)?.displayName || 
+      (sync.userData as any)?.display_name || 
+      dbParentProfile?.display_name
+    )?.trim();
+    if (displayName && displayName.length > 0) {
+      return displayName;
+    }
+
+    // 3. Auth profile name (session user displayName or user_metadata)
+    const authName = (
+      user?.displayName || 
+      (user as any)?.rawSupabaseUser?.user_metadata?.full_name || 
+      (user as any)?.rawSupabaseUser?.user_metadata?.name ||
+      (user as any)?.rawSupabaseUser?.user_metadata?.display_name
+    )?.trim();
+    if (authName && authName.length > 0 && authName !== "Guardian User") {
+      return authName;
+    }
+
+    // 4. Email prefix as final fallback
+    const rawEmail = user?.email || sync.userData?.email || "";
+    if (rawEmail && rawEmail.includes("@")) {
+      const prefix = rawEmail.split("@")[0].replace(/[._-]/g, " ").trim();
+      if (prefix.length > 0) {
+        return prefix
+          .split(" ")
+          .filter(Boolean)
+          .map((w: string) => w.charAt(0).toUpperCase() + w.slice(1))
+          .join(" ");
+      }
+    }
+
+    return isGuestMode ? "Demo Parent" : "Parent";
+  };
+
+  const parentDisplayName = getParentDisplayName();
+
+  const getParentInitials = (name: string): string => {
+    if (!name || !name.trim()) return "PA";
+    const parts = name.trim().split(/\s+/);
+    if (parts.length === 1) {
+      return parts[0].slice(0, 2).toUpperCase();
+    }
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  };
+
+  const parentInitials = getParentInitials(parentDisplayName);
 
   // Family & Children Management states
   const [selectedChildForManage, setSelectedChildForManage] = useState<string | null>(null);
@@ -202,6 +291,15 @@ export default function Dashboard({ syncProps, activeTabFromUrl }: DashboardProp
   };
 
   const [selectedChildId, setSelectedChildId] = useState<string>("child-1");
+
+  // Automatically select the first real child profile when asynchronous profiles arrive
+  useEffect(() => {
+    if (profiles && profiles.length > 0) {
+      if (!selectedChildId || !profiles.some(p => p.id === selectedChildId)) {
+        setSelectedChildId(profiles[0].id);
+      }
+    }
+  }, [profiles, selectedChildId]);
 
   const validTabs = ["overview", "family", "map", "danger-center", "devices", "controls", "talent", "ai-report", "assistant", "sos", "settings", "timeline"];
 
@@ -851,8 +949,26 @@ export default function Dashboard({ syncProps, activeTabFromUrl }: DashboardProp
     }
   };
 
-  // Current active child object
-  const activeChild = profiles.find(p => p.id === selectedChildId) || profiles[0];
+  // Current active child object (with safe fallback if profiles is loading or empty)
+  const fallbackChild: ChildProfile = {
+    id: "child-default",
+    name: "Child",
+    age: 10,
+    avatar: "https://images.unsplash.com/photo-1544717305-2782549b5136?auto=format&fit=crop&q=80&w=200",
+    device: "Companion Device",
+    battery: 100,
+    status: "offline",
+    screenTimeLimit: 120,
+    screenTimeToday: 0,
+    riskScore: 0,
+    lastSeenLocation: {
+      lat: 17.4849,
+      lng: 78.3907,
+      name: "Safe Perimeter",
+      timestamp: new Date().toISOString()
+    }
+  };
+  const activeChild = profiles.find(p => p.id === selectedChildId) || profiles[0] || fallbackChild;
 
   useEffect(() => {
     // Scroll chat to bottom when messages update
@@ -1392,11 +1508,11 @@ export default function Dashboard({ syncProps, activeTabFromUrl }: DashboardProp
         <div className="p-3 border-t border-slate-800/80 bg-slate-950 flex items-center justify-between gap-3">
           <div className="flex items-center space-x-3 overflow-hidden">
             <div className="h-9 w-9 rounded-xl bg-teal-500/20 text-teal-400 border border-teal-500/30 flex items-center justify-center font-black font-mono text-xs shrink-0">
-              ES
+              {parentInitials}
             </div>
             {!isSidebarCollapsed && (
               <div className="overflow-hidden">
-                <p className="text-xs font-bold leading-none text-white truncate">Elijah Stephen</p>
+                <p className="text-xs font-bold leading-none text-white truncate">{parentDisplayName}</p>
                 <span className="text-[9px] font-mono text-teal-400 block mt-0.5">Role: Parent Admin</span>
               </div>
             )}
@@ -2093,7 +2209,7 @@ export default function Dashboard({ syncProps, activeTabFromUrl }: DashboardProp
                     <span>Guardian AI Family Protection Active</span>
                   </div>
                   <h1 className="text-2xl sm:text-3xl font-black text-white font-display tracking-tight leading-tight">
-                    Good evening, <span className="text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 via-teal-300 to-purple-400">Elijah</span>.
+                    Good evening, <span className="text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 via-teal-300 to-purple-400">{parentDisplayName}</span>.
                   </h1>
                   <p className="text-xs sm:text-sm text-slate-300 leading-relaxed font-sans">
                     Your family protection system is operational. All {profiles.length} connected child nodes are protected with real-time AI content filtering, GPS geofencing, and automated threat shields.
@@ -5538,11 +5654,11 @@ Generated by Guardian AI Platform on ${new Date().toLocaleDateString()}`;
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div className="space-y-1">
                       <label className="text-[10px] text-slate-400 font-bold font-mono uppercase">Primary Administrator</label>
-                      <input type="text" disabled value={sync.userData?.fullName || user?.displayName || "Elijah Stephen"} className="w-full bg-slate-50 dark:bg-slate-900 p-2 rounded border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 cursor-not-allowed font-medium" />
+                      <input type="text" disabled value={parentDisplayName} className="w-full bg-slate-50 dark:bg-slate-900 p-2 rounded border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 cursor-not-allowed font-medium" />
                     </div>
                     <div className="space-y-1">
                       <label className="text-[10px] text-slate-400 font-bold font-mono uppercase">Email Address</label>
-                      <input type="text" disabled value={user?.email || "elijahstephenpaul03@gmail.com"} className="w-full bg-slate-50 dark:bg-slate-900 p-2 rounded border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 cursor-not-allowed font-medium truncate" />
+                      <input type="text" disabled value={user?.email || sync.userData?.email || ""} className="w-full bg-slate-50 dark:bg-slate-900 p-2 rounded border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 cursor-not-allowed font-medium truncate" />
                     </div>
                   </div>
 

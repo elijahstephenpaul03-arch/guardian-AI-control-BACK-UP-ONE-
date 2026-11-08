@@ -27,9 +27,10 @@ import {
   fetchAuthorizedSosAlerts,
   subscribeSosAlertsRealtime,
   registerChildDeviceInSupabase,
-  fetchDevicesFromSupabase
+  fetchDevicesFromSupabase,
+  fetchLinkedChildProfilesForParent
 } from "./supabase";
-import { UserRole, FamilyData, FamilyRequest, SosAlert, ChildDevice } from "../types";
+import { UserRole, FamilyData, FamilyRequest, SosAlert, ChildDevice, ChildProfile } from "../types";
 
 export interface SupabaseAuthHookResult {
   user: NormalizedAuthUser | null;
@@ -39,6 +40,7 @@ export interface SupabaseAuthHookResult {
   familyData: FamilyData | null;
   pendingRequests: FamilyRequest[];
   childFamilyRequest: FamilyRequest | null;
+  profiles: ChildProfile[];
   sosAlerts: SosAlert[];
   resolvingSosAlertId: string | null;
   devices: ChildDevice[];
@@ -67,6 +69,7 @@ export function useSupabaseAuth(): SupabaseAuthHookResult {
   const [familyData, setFamilyData] = useState<FamilyData | null>(null);
   const [pendingRequests, setPendingRequests] = useState<FamilyRequest[]>([]);
   const [childFamilyRequest, setChildFamilyRequest] = useState<FamilyRequest | null>(null);
+  const [profiles, setProfiles] = useState<ChildProfile[]>([]);
 
   // Emergency SOS state
   const [sosAlerts, setSosAlerts] = useState<SosAlert[]>([]);
@@ -101,9 +104,14 @@ export function useSupabaseAuth(): SupabaseAuthHookResult {
         return profile;
       } else {
         const isKnownAdmin = ADMIN_EMAILS.includes(email.toLowerCase());
+        const emailPrefix = email.includes("@") ? email.split("@")[0].replace(/[._-]/g, " ").trim() : email;
+        const formattedPrefix = emailPrefix 
+          ? emailPrefix.split(" ").filter(Boolean).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ") 
+          : "Parent";
         const fallbackProfile: UserProfilePayload = {
           role: isKnownAdmin ? "admin" : "parent",
-          fullName: fallbackName || email,
+          fullName: fallbackName || formattedPrefix,
+          displayName: fallbackName || null,
           email,
           status: "active",
           disabled: false,
@@ -143,6 +151,10 @@ export function useSupabaseAuth(): SupabaseAuthHookResult {
       // 2. Fetch pending requests
       const reqs = await supabaseFetchPendingRequests(parentUid);
       setPendingRequests(reqs as FamilyRequest[]);
+
+      // 3. Fetch authoritative linked child profiles
+      const childProfiles = await fetchLinkedChildProfilesForParent(parentUid);
+      setProfiles(childProfiles);
     } catch (err) {
       console.warn("[useSupabaseAuth] Error syncing parent family:", err);
     }
@@ -233,6 +245,17 @@ export function useSupabaseAuth(): SupabaseAuthHookResult {
         const normalized = normalizeUser(session.user);
         setUser(normalized);
 
+        // Immediate cached user restoration for instant profile rendering on refresh
+        try {
+          const cached = localStorage.getItem(`GUARDIAN_CACHED_USER_${session.user.id}`);
+          if (cached) {
+            const parsed = JSON.parse(cached);
+            if (parsed && typeof parsed === "object") {
+              setUserData(parsed);
+            }
+          }
+        } catch (_) {}
+
         // Schedule profile and device synchronization outside synchronous auth machine tick
         setTimeout(async () => {
           if (!isMounted || !session?.user) return;
@@ -256,7 +279,14 @@ export function useSupabaseAuth(): SupabaseAuthHookResult {
         setFamilyData(null);
         setPendingRequests([]);
         setChildFamilyRequest(null);
+        setProfiles([]);
         setDevices([]);
+        if (typeof window !== "undefined") {
+          try {
+            const keysToRemove = Object.keys(localStorage).filter(k => k.startsWith("GUARDIAN_CACHED_USER_"));
+            keysToRemove.forEach(k => localStorage.removeItem(k));
+          } catch (_) {}
+        }
       }
       setAuthLoading(false);
     });
@@ -349,6 +379,7 @@ export function useSupabaseAuth(): SupabaseAuthHookResult {
     setFamilyData(null);
     setPendingRequests([]);
     setChildFamilyRequest(null);
+    setProfiles([]);
     setDevices([]);
     if (typeof window !== "undefined") {
       try {
@@ -459,7 +490,7 @@ export function useSupabaseAuth(): SupabaseAuthHookResult {
     // Update pending requests list
     setPendingRequests(prev => prev.filter(r => r.id !== requestId));
     if (user) {
-      syncParentFamily(user.uid);
+      await syncParentFamily(user.uid);
     }
     return res;
   };
@@ -474,8 +505,9 @@ export function useSupabaseAuth(): SupabaseAuthHookResult {
   const removeChildFromFamily = async (childId: string) => {
     if (!user) throw new Error("Parent must be authenticated.");
     const res = await supabaseUnlinkChild(childId);
+    setProfiles(prev => prev.filter(p => p.id !== childId));
     if (user) {
-      syncParentFamily(user.uid);
+      await syncParentFamily(user.uid);
     }
     return res;
   };
@@ -486,6 +518,12 @@ export function useSupabaseAuth(): SupabaseAuthHookResult {
 
   const registerCurrentChildDevice = useCallback(async (childId: string, parentId: string) => {
     try {
+      // Guard: Companion device registration is strictly reserved for authenticated child accounts
+      if (userData?.role === "parent" && (!childId || childId === user?.uid)) {
+        console.info("[useSupabaseAuth] Notice: Skipping companion device registration for parent user session.");
+        return;
+      }
+
       const ua = typeof navigator !== "undefined" ? navigator.userAgent.toLowerCase() : "";
       const isTablet = /(ipad|tablet|(android(?!.*mobile))|(windows(?!.*phone)(.*touch))|kindle)/i.test(ua);
       const isMobile = /mobile|iphone|ipod|android.*mobile|blackberry|iemobile/i.test(ua);
@@ -576,6 +614,7 @@ export function useSupabaseAuth(): SupabaseAuthHookResult {
     familyData,
     pendingRequests,
     childFamilyRequest,
+    profiles,
     sosAlerts,
     resolvingSosAlertId,
     devices,

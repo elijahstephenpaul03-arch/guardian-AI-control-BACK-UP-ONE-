@@ -125,9 +125,14 @@ export default function App() {
   const devices = isSupabaseActive ? (supabaseAuth.devices.length > 0 ? supabaseAuth.devices : sync.devices) : sync.devices;
   const registerCurrentChildDevice = isSupabaseActive ? supabaseAuth.registerCurrentChildDevice : sync.registerCurrentChildDevice;
 
+  // Active child profiles from authoritative Supabase database when active
+  const profiles = (isSupabaseActive && !isGuestMode) ? supabaseAuth.profiles : sync.profiles;
+
   // Active sync bundle ensuring auth, family linking, and SOS propagate consistently to portals
   const activeSyncProps = {
     ...sync,
+    isSupabaseMode: isSupabaseActive,
+    profiles,
     user,
     userData,
     authLoading,
@@ -221,6 +226,47 @@ export default function App() {
   const isChild = role === "child";
   const isParent = role === "parent";
 
+  // STRICT PARENT-CHILD ROLE PROTECTION:
+  // If an authenticated user has the 'child' role, they must NEVER access Parent or Admin routes.
+  // Direct entry to /parent, /parent/*, /admin, /admin/*, or /demo/parent shows an unauthorized restricted screen
+  // with an immediate button to return to the Child Portal (/child) or sign out.
+  if (user && isChild && (
+    normalizedPath.startsWith("/parent") ||
+    normalizedPath.startsWith("/admin") ||
+    normalizedPath === "/demo/parent"
+  )) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-950 p-4 text-center">
+        <div className="max-w-md bg-slate-900 border border-amber-500/30 rounded-3xl p-8 space-y-4 shadow-2xl">
+          <div className="h-16 w-16 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-400 flex items-center justify-center mx-auto">
+            <ShieldAlert className="h-8 w-8" />
+          </div>
+          <h2 className="text-xl font-bold text-white font-display">Parent & Admin Access Restricted</h2>
+          <p className="text-xs text-slate-400 leading-relaxed">
+            You are signed in as a child account. Parent dashboard controls, admin portals, and companion telemetry are restricted to authenticated parents.
+          </p>
+          <div className="pt-2 flex flex-col gap-2">
+            <button
+              onClick={() => navigate("/child")}
+              className="w-full py-3 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs transition cursor-pointer flex items-center justify-center space-x-1.5 shadow-lg shadow-cyan-500/20"
+            >
+              <span>Return to Child Portal</span>
+            </button>
+            <button
+              onClick={() => {
+                handleLogout();
+                navigate("/parent/login");
+              }}
+              className="w-full py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 font-bold text-xs transition cursor-pointer"
+            >
+              Sign Out to Switch Accounts
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // 0. DEVELOPMENT PREVIEW & FACULTY DEMO ROUTES (READ-ONLY, NO AUTH REQUIRED)
   if (normalizedPath === "/demo") {
     return (
@@ -274,7 +320,7 @@ export default function App() {
         <main className="flex-1 flex flex-col">
           <Dashboard syncProps={demoParentSync} activeTabFromUrl={requestedTab} />
         </main>
-        <GuardianAssistant viewMode="dashboard" />
+        <GuardianAssistant viewMode="dashboard" user={demoParentSync.user} userData={demoParentSync.userData} />
         <FeatureTourModal isOpen={showTourModal} onClose={() => setShowTourModal(false)} />
       </div>
     );
@@ -609,7 +655,7 @@ export default function App() {
         <main className="flex-1 flex flex-col">
           <CompanionSimulator onBackToDashboard={() => navigate("/parent")} />
         </main>
-        <GuardianAssistant viewMode="companion" />
+        <GuardianAssistant viewMode="companion" user={user} userData={userData} />
       </div>
     );
   }
@@ -731,7 +777,7 @@ export default function App() {
         <main className="flex-1 flex flex-col">
           <Dashboard syncProps={activeSyncProps} activeTabFromUrl={requestedTab} />
         </main>
-        <GuardianAssistant viewMode="dashboard" />
+        <GuardianAssistant viewMode="dashboard" user={user} userData={userData} />
         <FeatureTourModal isOpen={showTourModal} onClose={() => setShowTourModal(false)} />
       </div>
     );
@@ -767,7 +813,7 @@ export default function App() {
         />
         <Footer />
       </main>
-      <GuardianAssistant viewMode="public" />
+      <GuardianAssistant viewMode="public" user={user} userData={userData} />
       <FeatureTourModal isOpen={showTourModal} onClose={() => setShowTourModal(false)} />
     </div>
   );

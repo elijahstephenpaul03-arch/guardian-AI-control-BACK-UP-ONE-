@@ -733,12 +733,6 @@ BEGIN
     END IF;
     NEW.parent_id := caller_rec.parent_id;
 
-    -- Invariant 3: family_code must match child''s actual linked family
-    IF NEW.family_code IS NOT NULL AND NEW.family_code IS DISTINCT FROM caller_rec.family_code THEN
-      RAISE EXCEPTION 'Permission denied: Family code must match child''s linked family.';
-    END IF;
-    NEW.family_code := caller_rec.family_code;
-
   ELSIF caller_rec.role = 'parent' THEN
     -- Parents can only register/update devices for their own linked children
     IF NEW.child_id IS NOT NULL THEN
