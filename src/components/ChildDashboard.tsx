@@ -227,6 +227,7 @@ export default function ChildDashboard({
   const [quizAnswered, setQuizAnswered] = useState(false);
   const [selectedAnswer, setSelectedAnswer] = useState<number | null>(null);
   const [isAnsweringQuiz, setIsAnsweringQuiz] = useState(false);
+  const [quizPersistenceError, setQuizPersistenceError] = useState<string | null>(null);
   const [lastQuizResult, setLastQuizResult] = useState<{
     isCorrect: boolean;
     leveledUp: boolean;
@@ -253,6 +254,7 @@ export default function ChildDashboard({
         setLastQuizResult(null);
         setFollowUpAnswered(false);
         setSelectedFollowUpIdx(null);
+        setQuizPersistenceError(null);
       } catch (err) {
         console.warn("[ChildDashboard] Error loading cyber quiz:", err);
       }
@@ -268,6 +270,7 @@ export default function ChildDashboard({
     setIsAnsweringQuiz(true);
     setSelectedAnswer(idx);
     setQuizAnswered(true);
+    setQuizPersistenceError(null);
 
     try {
       const result = await recordQuizAnswer(effectiveChildId, currentQuizQuestion, idx, quizProgress);
@@ -282,8 +285,9 @@ export default function ChildDashboard({
         leveledDown: result.leveledDown,
         xpEarned
       });
-    } catch (e) {
-      console.warn("Error recording quiz answer:", e);
+    } catch (e: any) {
+      console.error("[ChildDashboard] Notice: Error persisting quiz answer:", e);
+      setQuizPersistenceError(e?.message || "Notice: Cloud sync interrupted. Answer recorded locally.");
     } finally {
       setIsAnsweringQuiz(false);
     }
@@ -291,6 +295,7 @@ export default function ChildDashboard({
 
   const handleNextQuizQuestion = () => {
     if (!quizProgress) return;
+    setQuizPersistenceError(null);
     const nextQ = getNextQuizQuestion(quizProgress, currentQuizQuestion?.id);
     setCurrentQuizQuestion(nextQ);
     setQuizAnswered(false);
@@ -747,6 +752,13 @@ export default function ChildDashboard({
 
                         {/* Question and Real-World Context */}
                         <div className="space-y-3.5">
+                          {quizPersistenceError && (
+                            <div className="p-3 bg-amber-500/10 border border-amber-500/25 rounded-xl text-xs text-amber-300 flex items-center justify-between">
+                              <span>{quizPersistenceError}</span>
+                              <button onClick={() => setQuizPersistenceError(null)} className="text-slate-400 hover:text-white ml-2 text-[10px] uppercase font-bold">Dismiss</button>
+                            </div>
+                          )}
+
                           {currentQuizQuestion.scenario && (
                             <div className="p-3 bg-slate-950/70 border border-slate-800 rounded-xl text-xs text-slate-300 italic flex items-start gap-2">
                               <HelpCircle className="h-4 w-4 text-teal-400 shrink-0 mt-0.5" />

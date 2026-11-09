@@ -28,9 +28,40 @@ import {
   subscribeSosAlertsRealtime,
   registerChildDeviceInSupabase,
   fetchDevicesFromSupabase,
-  fetchLinkedChildProfilesForParent
+  fetchLinkedChildProfilesForParent,
+  fetchSafeZonesFromSupabase,
+  createSafeZoneInSupabase,
+  updateSafeZoneInSupabase,
+  deleteSafeZoneFromSupabase,
+  fetchHomeworkFromSupabase,
+  createHomeworkInSupabase,
+  updateHomeworkInSupabase,
+  deleteHomeworkFromSupabase,
+  fetchDailyGoalsFromSupabase,
+  createDailyGoalInSupabase,
+  updateDailyGoalInSupabase,
+  deleteDailyGoalFromSupabase,
+  fetchActivityLogsFromSupabase,
+  recordActivityLogInSupabase,
+  fetchDangerousEventsFromSupabase,
+  recordDangerousEventInSupabase,
+  fetchPlatformConfigFromSupabase,
+  updatePlatformConfigInSupabase
 } from "./supabase";
-import { UserRole, FamilyData, FamilyRequest, SosAlert, ChildDevice, ChildProfile } from "../types";
+import { 
+  UserRole, 
+  FamilyData, 
+  FamilyRequest, 
+  SosAlert, 
+  ChildDevice, 
+  ChildProfile,
+  SafeZone,
+  HomeworkTask,
+  DailyGoal,
+  ActivityLog,
+  DangerousEvent,
+  PlatformConfig
+} from "../types";
 
 export interface SupabaseAuthHookResult {
   user: NormalizedAuthUser | null;
@@ -58,6 +89,29 @@ export interface SupabaseAuthHookResult {
   removeChildFromFamily: (childId: string) => Promise<any>;
   triggerSosAlert: (childId?: string, childName?: string, location?: any) => Promise<any>;
   resolveSosAlert: (alertId: string) => Promise<any>;
+  // Phase 2.1 Modules
+  safeZones: SafeZone[];
+  homeworkList: HomeworkTask[];
+  dailyGoalsList: DailyGoal[];
+  activityLogs: ActivityLog[];
+  dangerousEvents: DangerousEvent[];
+  platformConfig: PlatformConfig | null;
+  addSafeZone: (zone: any) => Promise<SafeZone>;
+  addSafeZoneInDb: (zone: any) => Promise<SafeZone>;
+  updateSafeZone: (id: string, updates: any) => Promise<SafeZone>;
+  deleteSafeZone: (id: string) => Promise<void>;
+  deleteSafeZoneInDb: (id: string) => Promise<void>;
+  addHomeworkTask: (task: Partial<HomeworkTask>) => Promise<HomeworkTask>;
+  toggleHomeworkTask: (id: string, completed?: boolean) => Promise<HomeworkTask>;
+  deleteHomeworkTask: (id: string) => Promise<void>;
+  addDailyGoal: (goal: Partial<DailyGoal>) => Promise<DailyGoal>;
+  toggleDailyGoal: (id: string, completed?: boolean) => Promise<DailyGoal>;
+  updateDailyGoalProgress: (id: string, completedMinutes: number) => Promise<DailyGoal>;
+  deleteDailyGoal: (id: string) => Promise<void>;
+  recordActivityLog: (log: any) => Promise<ActivityLog>;
+  recordDangerousEvent: (event: any) => Promise<DangerousEvent>;
+  fetchPlatformConfig: () => Promise<PlatformConfig>;
+  updatePlatformConfig: (configUpdates: Partial<PlatformConfig>) => Promise<PlatformConfig>;
 }
 
 export function useSupabaseAuth(): SupabaseAuthHookResult {
@@ -77,6 +131,14 @@ export function useSupabaseAuth(): SupabaseAuthHookResult {
 
   // Companion devices state
   const [devices, setDevices] = useState<ChildDevice[]>([]);
+
+  // Phase 2.1 State
+  const [safeZones, setSafeZones] = useState<SafeZone[]>([]);
+  const [homeworkList, setHomeworkList] = useState<HomeworkTask[]>([]);
+  const [dailyGoalsList, setDailyGoalsList] = useState<DailyGoal[]>([]);
+  const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([]);
+  const [dangerousEvents, setDangerousEvents] = useState<DangerousEvent[]>([]);
+  const [platformConfig, setPlatformConfig] = useState<PlatformConfig | null>(null);
 
   // Sync devices from public.devices
   const syncDevices = useCallback(async (targetUid: string) => {
@@ -155,12 +217,52 @@ export function useSupabaseAuth(): SupabaseAuthHookResult {
       // 3. Fetch authoritative linked child profiles
       const childProfiles = await fetchLinkedChildProfilesForParent(parentUid);
       setProfiles(childProfiles);
+
+      // 4. Fetch safe zones
+      try {
+        const zones = await fetchSafeZonesFromSupabase();
+        setSafeZones(zones);
+      } catch (e) {
+        console.warn("[useSupabaseAuth] Could not load safe zones:", e);
+      }
+
+      // 5. Fetch activity logs
+      try {
+        const logs = await fetchActivityLogsFromSupabase();
+        setActivityLogs(logs);
+      } catch (e) {
+        console.warn("[useSupabaseAuth] Could not load activity logs:", e);
+      }
+
+      // 6. Fetch dangerous events
+      try {
+        const events = await fetchDangerousEventsFromSupabase();
+        setDangerousEvents(events);
+      } catch (e) {
+        console.warn("[useSupabaseAuth] Could not load dangerous events:", e);
+      }
+
+      // 7. Fetch homework
+      try {
+        const hw = await fetchHomeworkFromSupabase();
+        setHomeworkList(hw);
+      } catch (e) {
+        console.warn("[useSupabaseAuth] Could not load homework:", e);
+      }
+
+      // 8. Fetch daily goals
+      try {
+        const goals = await fetchDailyGoalsFromSupabase();
+        setDailyGoalsList(goals);
+      } catch (e) {
+        console.warn("[useSupabaseAuth] Could not load daily goals:", e);
+      }
     } catch (err) {
       console.warn("[useSupabaseAuth] Error syncing parent family:", err);
     }
   }, []);
 
-  // Sync family request status for authenticated child
+  // Sync family request status and data modules for authenticated child
   const syncChildFamily = useCallback(async (childUid: string) => {
     if (!isSupabaseConfigured) return;
     try {
@@ -184,6 +286,38 @@ export function useSupabaseAuth(): SupabaseAuthHookResult {
             createdAt: famRow.created_at,
           });
         }
+      }
+
+      // Fetch safe zones accessible to child (via parent)
+      try {
+        const zones = await fetchSafeZonesFromSupabase();
+        setSafeZones(zones);
+      } catch (e) {
+        console.warn("[useSupabaseAuth] Could not load safe zones for child:", e);
+      }
+
+      // Fetch homework assigned to child
+      try {
+        const hw = await fetchHomeworkFromSupabase(childUid);
+        setHomeworkList(hw);
+      } catch (e) {
+        console.warn("[useSupabaseAuth] Could not load homework for child:", e);
+      }
+
+      // Fetch daily goals for child
+      try {
+        const goals = await fetchDailyGoalsFromSupabase(childUid);
+        setDailyGoalsList(goals);
+      } catch (e) {
+        console.warn("[useSupabaseAuth] Could not load daily goals for child:", e);
+      }
+
+      // Fetch activity logs for child
+      try {
+        const logs = await fetchActivityLogsFromSupabase(childUid);
+        setActivityLogs(logs);
+      } catch (e) {
+        console.warn("[useSupabaseAuth] Could not load activity logs for child:", e);
       }
     } catch (err) {
       console.warn("[useSupabaseAuth] Error syncing child family:", err);
@@ -281,6 +415,11 @@ export function useSupabaseAuth(): SupabaseAuthHookResult {
         setChildFamilyRequest(null);
         setProfiles([]);
         setDevices([]);
+        setSafeZones([]);
+        setHomeworkList([]);
+        setDailyGoalsList([]);
+        setActivityLogs([]);
+        setDangerousEvents([]);
         if (typeof window !== "undefined") {
           try {
             const keysToRemove = Object.keys(localStorage).filter(k => k.startsWith("GUARDIAN_CACHED_USER_"));
@@ -289,6 +428,11 @@ export function useSupabaseAuth(): SupabaseAuthHookResult {
         }
       }
       setAuthLoading(false);
+    });
+
+    // Initial platform config fetch
+    fetchPlatformConfigFromSupabase().then(setPlatformConfig).catch(e => {
+      console.warn("[useSupabaseAuth] Could not load platform config:", e);
     });
 
     return () => {
@@ -606,6 +750,119 @@ export function useSupabaseAuth(): SupabaseAuthHookResult {
     }
   };
 
+  // ==============================================================================
+  // PHASE 2.1: CRUD OPERATIONS (SAFE ZONES, HOMEWORK, GOALS, LOGS, EVENTS, CONFIG)
+  // ==============================================================================
+
+  const addSafeZone = async (zone: any) => {
+    const created = await createSafeZoneInSupabase(zone);
+    setSafeZones(prev => [created, ...prev.filter(z => z.id !== created.id)]);
+    return created;
+  };
+
+  const updateSafeZone = async (id: string, updates: any) => {
+    const updated = await updateSafeZoneInSupabase(id, updates);
+    setSafeZones(prev => prev.map(z => z.id === id ? updated : z));
+    return updated;
+  };
+
+  const deleteSafeZone = async (id: string) => {
+    await deleteSafeZoneFromSupabase(id);
+    setSafeZones(prev => prev.filter(z => z.id !== id));
+  };
+
+  const addHomeworkTask = async (task: Partial<HomeworkTask>) => {
+    const created = await createHomeworkInSupabase({
+      childId: task.childId,
+      title: task.title || "Untitled Task",
+      subject: task.subject || "General",
+      dueDate: task.dueDate,
+      notes: task.notes,
+    });
+    setHomeworkList(prev => [created, ...prev.filter(t => t.id !== created.id)]);
+    return created;
+  };
+
+  const toggleHomeworkTask = async (id: string, completed?: boolean) => {
+    const task = homeworkList.find(t => t.id === id);
+    const targetCompleted = completed !== undefined ? completed : !task?.completed;
+    const updated = await updateHomeworkInSupabase(id, { completed: targetCompleted });
+    setHomeworkList(prev => prev.map(t => t.id === id ? updated : t));
+    return updated;
+  };
+
+  const deleteHomeworkTask = async (id: string) => {
+    await deleteHomeworkFromSupabase(id);
+    setHomeworkList(prev => prev.filter(t => t.id !== id));
+  };
+
+  const addDailyGoal = async (goal: Partial<DailyGoal>) => {
+    const created = await createDailyGoalInSupabase({
+      childId: goal.childId,
+      title: goal.title || "Daily Goal",
+      category: goal.category,
+      targetMinutes: goal.targetMinutes,
+      completedMinutes: goal.completedMinutes,
+      completed: goal.completed,
+    });
+    setDailyGoalsList(prev => [created, ...prev.filter(g => g.id !== created.id)]);
+    return created;
+  };
+
+  const toggleDailyGoal = async (id: string, completed?: boolean) => {
+    const goal = dailyGoalsList.find(g => g.id === id);
+    const targetCompleted = completed !== undefined ? completed : !goal?.completed;
+    const targetMinutes = targetCompleted ? (goal?.targetMinutes || 30) : 0;
+    const updated = await updateDailyGoalInSupabase(id, {
+      completed: targetCompleted,
+      completedMinutes: targetMinutes,
+    });
+    setDailyGoalsList(prev => prev.map(g => g.id === id ? updated : g));
+    return updated;
+  };
+
+  const updateDailyGoalProgress = async (id: string, completedMinutes: number) => {
+    const goal = dailyGoalsList.find(g => g.id === id);
+    const target = goal?.targetMinutes || 60;
+    const clampedMins = Math.max(0, Math.min(target, completedMinutes));
+    const isFinished = clampedMins >= target;
+    const updated = await updateDailyGoalInSupabase(id, {
+      completedMinutes: clampedMins,
+      completed: isFinished,
+    });
+    setDailyGoalsList(prev => prev.map(g => g.id === id ? updated : g));
+    return updated;
+  };
+
+  const deleteDailyGoal = async (id: string) => {
+    await deleteDailyGoalFromSupabase(id);
+    setDailyGoalsList(prev => prev.filter(g => g.id !== id));
+  };
+
+  const recordActivityLog = async (log: any) => {
+    const created = await recordActivityLogInSupabase(log);
+    setActivityLogs(prev => [created, ...prev]);
+    return created;
+  };
+
+  const recordDangerousEvent = async (event: any) => {
+    const created = await recordDangerousEventInSupabase(event);
+    setDangerousEvents(prev => [created, ...prev]);
+    return created;
+  };
+
+  const fetchPlatformConfig = async () => {
+    const cfg = await fetchPlatformConfigFromSupabase();
+    setPlatformConfig(cfg);
+    return cfg;
+  };
+
+  const updatePlatformConfig = async (configUpdates: Partial<PlatformConfig>) => {
+    const updated = await updatePlatformConfigInSupabase(configUpdates);
+    setPlatformConfig(updated);
+    return updated;
+  };
+
   return {
     user,
     userData,
@@ -632,5 +889,28 @@ export function useSupabaseAuth(): SupabaseAuthHookResult {
     removeChildFromFamily,
     triggerSosAlert,
     resolveSosAlert,
+    // Phase 2.1 Modules
+    safeZones,
+    homeworkList,
+    dailyGoalsList,
+    activityLogs,
+    dangerousEvents,
+    platformConfig,
+    addSafeZone,
+    addSafeZoneInDb: addSafeZone,
+    updateSafeZone,
+    deleteSafeZone,
+    deleteSafeZoneInDb: deleteSafeZone,
+    addHomeworkTask,
+    toggleHomeworkTask,
+    deleteHomeworkTask,
+    addDailyGoal,
+    toggleDailyGoal,
+    updateDailyGoalProgress,
+    deleteDailyGoal,
+    recordActivityLog,
+    recordDangerousEvent,
+    fetchPlatformConfig,
+    updatePlatformConfig,
   };
 }

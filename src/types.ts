@@ -193,3 +193,28 @@ export interface PlatformConfig {
   allowNewRegistrations: boolean;
 }
 
+export interface SafeZone {
+  id: string;
+  parentId?: string;
+  name: string;
+  active: boolean;
+  radius: number;
+  lat: number;
+  lng: number;
+  createdAt?: string;
+}
+
+export interface DangerousEvent {
+  id: string;
+  parentId: string;
+  childId?: string;
+  category: string;
+  target: string;
+  riskLevel: 'low' | 'medium' | 'high' | 'critical';
+  confidence: number;
+  reason?: string;
+  actionTaken?: string;
+  suggestedAction?: string;
+  status: string;
+  timestamp: string;
+}

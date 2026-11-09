@@ -128,6 +128,34 @@ export default function App() {
   // Active child profiles from authoritative Supabase database when active
   const profiles = (isSupabaseActive && !isGuestMode) ? supabaseAuth.profiles : sync.profiles;
 
+  // Active Phase 2.1 methods and state (Supabase vs Firebase)
+  const safeZones = isSupabaseActive ? supabaseAuth.safeZones : sync.safeZones;
+  const addSafeZone = isSupabaseActive ? supabaseAuth.addSafeZone : sync.addSafeZoneInDb;
+  const updateSafeZone = isSupabaseActive ? supabaseAuth.updateSafeZone : (sync as any).updateSafeZone;
+  const deleteSafeZone = isSupabaseActive ? supabaseAuth.deleteSafeZone : sync.deleteSafeZoneInDb;
+
+  const homeworkList = isSupabaseActive ? supabaseAuth.homeworkList : sync.homeworkList;
+  const addHomeworkTask = isSupabaseActive ? supabaseAuth.addHomeworkTask : sync.addHomeworkTask;
+  const toggleHomeworkTask = isSupabaseActive ? supabaseAuth.toggleHomeworkTask : sync.toggleHomeworkTask;
+  const deleteHomeworkTask = isSupabaseActive ? supabaseAuth.deleteHomeworkTask : sync.deleteHomeworkTask;
+
+  const dailyGoalsList = isSupabaseActive ? supabaseAuth.dailyGoalsList : sync.dailyGoalsList;
+  const addDailyGoal = isSupabaseActive ? supabaseAuth.addDailyGoal : sync.addDailyGoal;
+  const toggleDailyGoal = isSupabaseActive ? supabaseAuth.toggleDailyGoal : sync.toggleDailyGoal;
+  const updateDailyGoalProgress = isSupabaseActive ? supabaseAuth.updateDailyGoalProgress : sync.updateDailyGoalProgress;
+  const deleteDailyGoal = isSupabaseActive ? supabaseAuth.deleteDailyGoal : sync.deleteDailyGoal;
+
+  const logs = isSupabaseActive ? supabaseAuth.activityLogs : sync.logs;
+  const activityLogs = isSupabaseActive ? supabaseAuth.activityLogs : (sync.logs || []);
+  const recordActivityLog = isSupabaseActive ? supabaseAuth.recordActivityLog : (sync as any).recordActivityLog;
+
+  const dangerousEvents = isSupabaseActive ? supabaseAuth.dangerousEvents : sync.dangerousEvents;
+  const recordDangerousEvent = isSupabaseActive ? supabaseAuth.recordDangerousEvent : (sync as any).recordDangerousEvent;
+
+  const platformConfig = isSupabaseActive ? (supabaseAuth.platformConfig || (sync as any).platformConfig) : (sync as any).platformConfig;
+  const updatePlatformConfig = isSupabaseActive ? supabaseAuth.updatePlatformConfig : (sync as any).updatePlatformConfig;
+  const fetchPlatformConfig = isSupabaseActive ? supabaseAuth.fetchPlatformConfig : (sync as any).fetchPlatformConfig;
+
   // Active sync bundle ensuring auth, family linking, and SOS propagate consistently to portals
   const activeSyncProps = {
     ...sync,
@@ -155,6 +183,30 @@ export default function App() {
     resolvingSosAlertId,
     devices,
     registerCurrentChildDevice,
+    // Phase 2.1 Modules
+    safeZones,
+    addSafeZone,
+    addSafeZoneInDb: addSafeZone,
+    updateSafeZone,
+    deleteSafeZone,
+    deleteSafeZoneInDb: deleteSafeZone,
+    homeworkList,
+    addHomeworkTask,
+    toggleHomeworkTask,
+    deleteHomeworkTask,
+    dailyGoalsList,
+    addDailyGoal,
+    toggleDailyGoal,
+    updateDailyGoalProgress,
+    deleteDailyGoal,
+    logs,
+    activityLogs,
+    recordActivityLog,
+    dangerousEvents,
+    recordDangerousEvent,
+    platformConfig,
+    updatePlatformConfig,
+    fetchPlatformConfig,
   };
 
   // In-memory isolated mock data sync for development preview & faculty evaluation
@@ -596,15 +648,15 @@ export default function App() {
           joinFamilyByCode={joinFamilyByCode}
           triggerSosAlert={triggerSosAlert}
           sosAlerts={sosAlerts}
-          homeworkList={sync.homeworkList}
-          addHomeworkTask={sync.addHomeworkTask}
-          toggleHomeworkTask={sync.toggleHomeworkTask}
-          deleteHomeworkTask={sync.deleteHomeworkTask}
-          dailyGoalsList={sync.dailyGoalsList}
-          addDailyGoal={sync.addDailyGoal}
-          toggleDailyGoal={sync.toggleDailyGoal}
-          updateDailyGoalProgress={sync.updateDailyGoalProgress}
-          deleteDailyGoal={sync.deleteDailyGoal}
+          homeworkList={homeworkList}
+          addHomeworkTask={async (task) => { await addHomeworkTask(task); }}
+          toggleHomeworkTask={async (id, completed) => { await toggleHomeworkTask(id, completed); }}
+          deleteHomeworkTask={async (id) => { await deleteHomeworkTask(id); }}
+          dailyGoalsList={dailyGoalsList}
+          addDailyGoal={async (goal) => { await addDailyGoal(goal); }}
+          toggleDailyGoal={async (id, completed) => { await toggleDailyGoal(id, completed); }}
+          updateDailyGoalProgress={async (id, completedMinutes) => { await updateDailyGoalProgress(id, completedMinutes); }}
+          deleteDailyGoal={async (id) => { await deleteDailyGoal(id); }}
           registerCurrentChildDevice={registerCurrentChildDevice}
         />
       </div>

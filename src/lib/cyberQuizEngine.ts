@@ -59,12 +59,24 @@ export function createDefaultProgress(childId: string): ChildQuizProgress {
  * Tries Supabase public.child_quiz_progress first, then falls back to localStorage.
  */
 export async function fetchChildQuizProgress(childId: string): Promise<ChildQuizProgress> {
-  const fallback = createDefaultProgress(childId);
+  let authoritativeChildId = childId;
+
+  // Authoritatively derive active session UID if authenticated via Supabase
+  if (isSupabaseConfigured) {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.user?.id) {
+        authoritativeChildId = session.user.id;
+      }
+    } catch (_) {}
+  }
+
+  const fallback = createDefaultProgress(authoritativeChildId);
 
   // Try reading from localStorage first as fast cache
   if (typeof window !== "undefined") {
     try {
-      const local = localStorage.getItem(getLocalKey(childId));
+      const local = localStorage.getItem(getLocalKey(authoritativeChildId));
       if (local) {
         const parsed = JSON.parse(local);
         if (parsed && typeof parsed === "object") {
@@ -74,7 +86,7 @@ export async function fetchChildQuizProgress(childId: string): Promise<ChildQuiz
     } catch (_) {}
   }
 
-  if (!isSupabaseConfigured || !childId || childId === "default" || childId === "guest") {
+  if (!isSupabaseConfigured || !authoritativeChildId || authoritativeChildId === "default" || authoritativeChildId === "guest" || authoritativeChildId === "guest-child") {
     return fallback;
   }
 
@@ -82,7 +94,7 @@ export async function fetchChildQuizProgress(childId: string): Promise<ChildQuiz
     const { data, error } = await (supabase as any)
       .from("child_quiz_progress")
       .select("*")
-      .eq("child_id", childId)
+      .eq("child_id", authoritativeChildId)
       .maybeSingle();
 
     if (error) {
@@ -107,7 +119,7 @@ export async function fetchChildQuizProgress(childId: string): Promise<ChildQuiz
 
       if (typeof window !== "undefined") {
         try {
-          localStorage.setItem(getLocalKey(childId), JSON.stringify(dbProgress));
+          localStorage.setItem(getLocalKey(authoritativeChildId), JSON.stringify(dbProgress));
         } catch (_) {}
       }
 
@@ -164,6 +176,7 @@ export function getNextQuizQuestion(
 
 /**
  * Records a child's answer, updates progress and adaptive level, and persists to Supabase and cache.
+ * Strictly uses authenticated Supabase session UID as child_id (never trusts client-supplied UID).
  */
 export async function recordQuizAnswer(
   childId: string,
@@ -176,6 +189,29 @@ export async function recordQuizAnswer(
   leveledUp: boolean;
   leveledDown: boolean;
 }> {
+  // 1. Authoritative Session UID resolution (Never trust client-supplied child UID)
+  let authoritativeChildId = childId;
+  if (isSupabaseConfigured) {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.user?.id) {
+        authoritativeChildId = session.user.id;
+      }
+    } catch (_) {}
+  }
+
+  // 2. Prevent duplicate submissions for the same question attempt in current cycle
+  const exhaustedList = [...(currentProgress.exhaustedQuestionIds || [])];
+  if (exhaustedList.includes(question.id)) {
+    console.warn(`[cyberQuizEngine] Question ${question.id} was already answered in current cycle. Skipping duplicate write.`);
+    return {
+      isCorrect: Boolean(question.options[selectedOptionIndex]?.isCorrect),
+      updatedProgress: currentProgress,
+      leveledUp: false,
+      leveledDown: false
+    };
+  }
+
   const selectedOption = question.options[selectedOptionIndex];
   const isCorrect = Boolean(selectedOption?.isCorrect);
 
@@ -186,12 +222,9 @@ export async function recordQuizAnswer(
   const newStreak = isCorrect ? currentProgress.streak + 1 : 0;
 
   // Update exhausted list
-  const exhaustedList = [...(currentProgress.exhaustedQuestionIds || [])];
-  if (!exhaustedList.includes(question.id)) {
-    exhaustedList.push(question.id);
-  }
+  exhaustedList.push(question.id);
 
-  // Check if cycle is complete (all 55 questions answered)
+  // Check if cycle is complete (all questions answered)
   let currentCycle = currentProgress.currentCycle || 1;
   let finalExhaustedList = exhaustedList;
   if (exhaustedList.length >= CYBER_QUIZ_BANK.length) {
@@ -239,7 +272,7 @@ export async function recordQuizAnswer(
   }
 
   const updatedProgress: ChildQuizProgress = {
-    childId,
+    childId: authoritativeChildId,
     currentLevel: nextLevel,
     questionsAttempted: newAttempted,
     correctCount: newCorrect,
@@ -255,10 +288,10 @@ export async function recordQuizAnswer(
   // 1. Update localStorage cache immediately
   if (typeof window !== "undefined") {
     try {
-      localStorage.setItem(getLocalKey(childId), JSON.stringify(updatedProgress));
+      localStorage.setItem(getLocalKey(authoritativeChildId), JSON.stringify(updatedProgress));
 
       // Append to local history array
-      const historyRaw = localStorage.getItem(getLocalHistoryKey(childId));
+      const historyRaw = localStorage.getItem(getLocalHistoryKey(authoritativeChildId));
       const historyList = historyRaw ? JSON.parse(historyRaw) : [];
       historyList.unshift({
         questionId: question.id,
@@ -268,44 +301,61 @@ export async function recordQuizAnswer(
         isCorrect,
         answeredAt: updatedProgress.updatedAt
       });
-      localStorage.setItem(getLocalHistoryKey(childId), JSON.stringify(historyList.slice(0, 50)));
+      localStorage.setItem(getLocalHistoryKey(authoritativeChildId), JSON.stringify(historyList.slice(0, 50)));
     } catch (_) {}
   }
 
   // 2. Persist to Supabase if configured and authenticated
-  if (isSupabaseConfigured && childId && childId !== "default" && childId !== "guest") {
-    try {
-      // Upsert progress
-      await (supabase as any)
-        .from("child_quiz_progress")
-        .upsert({
-          child_id: childId,
-          current_level: updatedProgress.currentLevel,
-          questions_attempted: updatedProgress.questionsAttempted,
-          correct_count: updatedProgress.correctCount,
-          incorrect_count: updatedProgress.incorrectCount,
-          accuracy_percentage: updatedProgress.accuracyPercentage,
-          streak: updatedProgress.streak,
-          weak_concepts: updatedProgress.weakConcepts,
-          exhausted_question_ids: updatedProgress.exhaustedQuestionIds,
-          current_cycle: updatedProgress.currentCycle,
-          updated_at: updatedProgress.updatedAt
-        }, { onConflict: "child_id" });
+  if (isSupabaseConfigured && authoritativeChildId && authoritativeChildId !== "default" && authoritativeChildId !== "guest" && authoritativeChildId !== "guest-child") {
+    // 2a. Atomic Upsert to child_quiz_progress
+    const { error: progErr } = await (supabase as any)
+      .from("child_quiz_progress")
+      .upsert({
+        child_id: authoritativeChildId,
+        current_level: updatedProgress.currentLevel,
+        questions_attempted: updatedProgress.questionsAttempted,
+        correct_count: updatedProgress.correctCount,
+        incorrect_count: updatedProgress.incorrectCount,
+        accuracy_percentage: updatedProgress.accuracyPercentage,
+        streak: updatedProgress.streak,
+        weak_concepts: updatedProgress.weakConcepts,
+        exhausted_question_ids: updatedProgress.exhaustedQuestionIds,
+        current_cycle: updatedProgress.currentCycle,
+        updated_at: updatedProgress.updatedAt
+      }, { onConflict: "child_id" });
 
-      // Insert history log
-      await (supabase as any)
-        .from("child_quiz_history")
-        .insert({
-          child_id: childId,
-          question_id: question.id,
-          category: question.category,
-          difficulty_level: question.difficulty,
-          selected_option_index: selectedOptionIndex,
-          is_correct: isCorrect,
-          answered_at: updatedProgress.updatedAt
-        });
-    } catch (dbErr) {
-      console.warn("[cyberQuizEngine] Error persisting quiz answer to Supabase:", dbErr);
+    if (progErr) {
+      console.error("[cyberQuizEngine] Critical error updating child_quiz_progress in Supabase:", {
+        code: progErr.code,
+        message: progErr.message,
+        details: progErr.details,
+        childId: authoritativeChildId
+      });
+      throw new Error(`Failed to save quiz progress to database: ${progErr.message}`);
+    }
+
+    // 2b. Insert audit history log into child_quiz_history
+    const { error: histErr } = await (supabase as any)
+      .from("child_quiz_history")
+      .insert({
+        child_id: authoritativeChildId,
+        question_id: question.id,
+        category: question.category,
+        difficulty_level: question.difficulty,
+        selected_option_index: selectedOptionIndex,
+        is_correct: isCorrect,
+        answered_at: updatedProgress.updatedAt
+      });
+
+    if (histErr) {
+      console.error("[cyberQuizEngine] Critical error inserting child_quiz_history into Supabase:", {
+        code: histErr.code,
+        message: histErr.message,
+        details: histErr.details,
+        childId: authoritativeChildId,
+        questionId: question.id
+      });
+      throw new Error(`Failed to save quiz history log to database: ${histErr.message}`);
     }
   }
 

@@ -107,14 +107,24 @@ export default function AdminDashboard({
   const loadAdminData = async () => {
     setIsRefreshing(true);
     try {
-      // 1. Fetch real system platformConfig from Firestore
+      // 1. Fetch real system platformConfig from Supabase or Firestore
       try {
-        const configSnap = await getDoc(doc(db, "system", "platformConfig"));
-        if (configSnap.exists()) {
-          setPlatformConfig(prev => ({
-            ...prev,
-            ...configSnap.data()
-          }));
+        if (syncProps?.isSupabaseMode && syncProps?.fetchPlatformConfig) {
+          const cfg = await syncProps.fetchPlatformConfig();
+          if (cfg) {
+            setPlatformConfig(prev => ({
+              ...prev,
+              ...cfg
+            }));
+          }
+        } else {
+          const configSnap = await getDoc(doc(db, "system", "platformConfig"));
+          if (configSnap.exists()) {
+            setPlatformConfig(prev => ({
+              ...prev,
+              ...configSnap.data()
+            }));
+          }
         }
       } catch (cfgErr) {
         console.warn("Could not load system/platformConfig:", cfgErr);
@@ -190,10 +200,14 @@ export default function AdminDashboard({
     const nextVal = !platformConfig.allowNewRegistrations;
     setPlatformConfig(p => ({ ...p, allowNewRegistrations: nextVal }));
     try {
-      await setDoc(doc(db, "system", "platformConfig"), {
-        allowNewRegistrations: nextVal,
-        updatedAt: new Date().toISOString()
-      }, { merge: true });
+      if (syncProps?.isSupabaseMode && syncProps?.updatePlatformConfig) {
+        await syncProps.updatePlatformConfig({ allowNewRegistrations: nextVal });
+      } else {
+        await setDoc(doc(db, "system", "platformConfig"), {
+          allowNewRegistrations: nextVal,
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+      }
 
       const logId = `log-reg-${Date.now()}`;
       const logEntry: SecurityAuditLog = {
@@ -209,7 +223,7 @@ export default function AdminDashboard({
       await setDoc(doc(db, "auditLogs", logId), logEntry).catch(() => {});
       setAuditLogs(prev => [logEntry, ...prev]);
 
-      setActionSuccessMsg(`Registration Gateway has been ${nextVal ? "OPENED" : "LOCKED"} in Firestore.`);
+      setActionSuccessMsg(`Registration Gateway has been ${nextVal ? "OPENED" : "LOCKED"}.`);
       setTimeout(() => setActionSuccessMsg(null), 4000);
     } catch (err: any) {
       console.error("Failed to update registration gateway setting:", err);
@@ -218,13 +232,17 @@ export default function AdminDashboard({
     }
   };
 
-  // Handle Save Global Policies (persists to Firestore)
+  // Handle Save Global Policies (persists to Supabase or Firestore)
   const handleSavePolicies = async () => {
     try {
-      await setDoc(doc(db, "system", "platformConfig"), {
-        ...platformConfig,
-        updatedAt: new Date().toISOString()
-      }, { merge: true });
+      if (syncProps?.isSupabaseMode && syncProps?.updatePlatformConfig) {
+        await syncProps.updatePlatformConfig(platformConfig);
+      } else {
+        await setDoc(doc(db, "system", "platformConfig"), {
+          ...platformConfig,
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+      }
 
       const logId = `log-policy-${Date.now()}`;
       const logEntry: SecurityAuditLog = {
@@ -240,7 +258,7 @@ export default function AdminDashboard({
       await setDoc(doc(db, "auditLogs", logId), logEntry).catch(() => {});
       setAuditLogs(prev => [logEntry, ...prev]);
 
-      setActionSuccessMsg("Global platform policies saved successfully to Firestore.");
+      setActionSuccessMsg("Global platform policies saved successfully.");
       setTimeout(() => setActionSuccessMsg(null), 4000);
     } catch (err: any) {
       console.error("Failed to save policies:", err);

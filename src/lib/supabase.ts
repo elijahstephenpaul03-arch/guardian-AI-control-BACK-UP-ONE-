@@ -1,5 +1,5 @@
 import { createClient, SupabaseClient, User as SupabaseUser, Session } from "@supabase/supabase-js";
-import { UserRole, ChildDevice, ChildProfile } from "../types";
+import { UserRole, ChildDevice, ChildProfile, SafeZone, HomeworkTask, DailyGoal, ActivityLog, DangerousEvent, PlatformConfig } from "../types";
 
 // ==============================================================================
 // GUARDIAN AI: INDEPENDENT SUPABASE EDITION - CLIENT & AUTHENTICATION (PHASE 2)
@@ -1320,8 +1320,8 @@ export async function registerChildDeviceInSupabase(params: RegisterDeviceParams
   const devName = params.deviceName || `${params.deviceType ? params.deviceType.charAt(0).toUpperCase() + params.deviceType.slice(1) : "Companion"} Device`;
 
   // Upsert payload contains only verified, actual columns of public.devices:
-  // device_id, device_name, device_model, android_version, battery, charging, online, gps, screen_on, last_seen, connection_quality, sos_active, parent_id, child_id, updated_at
-  const row = {
+  // device_id, device_name, device_model, android_version, battery, charging, online, gps, screen_on, last_seen, connection_quality, sos_active, parent_id, child_id, family_code, updated_at
+  const row: Record<string, any> = {
     device_id: devId,
     device_name: devName,
     device_model: params.model || "Companion Device",
@@ -1339,39 +1339,44 @@ export async function registerChildDeviceInSupabase(params: RegisterDeviceParams
     updated_at: nowIso,
   };
 
-  let { error } = await (supabase as any)
-    .from("devices")
-    .upsert(row, { onConflict: "device_id" });
-
-  // Self-healing: if an RLS 42501 error occurs due to a hidden foreign device_id conflict
-  if (error && (error.code === "42501" || error.message?.includes("row-level security"))) {
-    console.warn("[registerChildDeviceInSupabase] Caught RLS 42501 on device_id conflict. Regenerating fresh child-scoped device ID and retrying...", {
-      previousDeviceId: devId,
-      childId: effectiveChildId,
-    });
-    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-    let freshSuffix = "";
-    for (let i = 0; i < 4; i++) {
-      freshSuffix += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    const freshDevId = `DEV-${effectiveChildId.replace(/-/g, "").slice(0, 4).toUpperCase()}-${Date.now().toString(36).toUpperCase()}-${freshSuffix}`;
-    devId = freshDevId;
-    row.device_id = freshDevId;
-    if (typeof window !== "undefined") {
-      try {
-        localStorage.setItem(childScopedKey, freshDevId);
-        localStorage.setItem("GUA_DEVICE_ID", freshDevId);
-      } catch (_) {}
-    }
-
-    const retryRes = await (supabase as any)
-      .from("devices")
-      .upsert(row, { onConflict: "device_id" });
-    error = retryRes.error;
+  if (callerProfile.familyCode) {
+    row.family_code = callerProfile.familyCode;
   }
 
+  // Targeted operation to prevent dual-policy evaluation mismatches:
+  // Existing device owned by child: UPDATE
+  // New registration: INSERT (with fallback to upsert on concurrent duplicate)
+  let dbResult;
+  if (isUpdate) {
+    dbResult = await (supabase as any)
+      .from("devices")
+      .update(row)
+      .eq("device_id", devId);
+  } else {
+    dbResult = await (supabase as any)
+      .from("devices")
+      .insert(row);
+
+    if (dbResult.error && (dbResult.error.code === "23505" || dbResult.error.message?.includes("duplicate key"))) {
+      dbResult = await (supabase as any)
+        .from("devices")
+        .upsert(row, { onConflict: "device_id" });
+    }
+  }
+
+  let error = dbResult.error;
+
   if (error) {
-    console.error("[registerChildDeviceInSupabase] Error registering device in Supabase:", error);
+    console.error("[registerChildDeviceInSupabase] Error registering device in Supabase:", {
+      code: error.code,
+      message: error.message,
+      details: error.details,
+      hint: error.hint,
+      deviceId: devId,
+      childId: effectiveChildId,
+      parentId: effectiveParentId,
+      operation: isUpdate ? "UPDATE" : "INSERT",
+    });
     throw new Error(error.message || "Failed to register child device in Supabase.");
   }
 
@@ -1525,5 +1530,640 @@ export async function fetchLinkedChildProfilesForParent(parentUid: string): Prom
     return [];
   }
 }
+
+// ==============================================================================
+// 8. SAFE ZONES OPERATIONS (PHASE 2.1)
+// ==============================================================================
+
+export async function fetchSafeZonesFromSupabase(): Promise<SafeZone[]> {
+  if (!isSupabaseConfigured) return [];
+  const { data, error } = await (supabase as any)
+    .from("safe_zones")
+    .select("*")
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    console.error("[fetchSafeZonesFromSupabase] Error:", error);
+    throw new Error(error.message || "Failed to fetch safe zones from Supabase.");
+  }
+
+  return (data || []).map((row: any): SafeZone => ({
+    id: row.id,
+    parentId: row.parent_id,
+    name: row.name,
+    active: row.active ?? true,
+    radius: row.radius ?? 200,
+    lat: Number(row.lat),
+    lng: Number(row.lng),
+    createdAt: row.created_at,
+  }));
+}
+
+export async function createSafeZoneInSupabase(zone: {
+  name: string;
+  radius?: number;
+  lat: number;
+  lng: number;
+  active?: boolean;
+}): Promise<SafeZone> {
+  if (!isSupabaseConfigured) throw new Error("Supabase is not configured.");
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.user?.id) throw new Error("Authenticated parent session required to create safe zones.");
+
+  const payload = {
+    parent_id: session.user.id,
+    name: zone.name,
+    radius: zone.radius ?? 200,
+    lat: zone.lat,
+    lng: zone.lng,
+    active: zone.active ?? true,
+  };
+
+  const { data, error } = await (supabase as any)
+    .from("safe_zones")
+    .insert(payload)
+    .select()
+    .single();
+
+  if (error) {
+    console.error("[createSafeZoneInSupabase] Error:", error);
+    throw new Error(error.message || "Failed to create safe zone in Supabase.");
+  }
+
+  return {
+    id: data.id,
+    parentId: data.parent_id,
+    name: data.name,
+    active: data.active,
+    radius: data.radius,
+    lat: Number(data.lat),
+    lng: Number(data.lng),
+    createdAt: data.created_at,
+  };
+}
+
+export async function updateSafeZoneInSupabase(
+  id: string,
+  updates: Partial<{ name: string; radius: number; lat: number; lng: number; active: boolean }>
+): Promise<SafeZone> {
+  if (!isSupabaseConfigured) throw new Error("Supabase is not configured.");
+
+  const payload: Record<string, any> = {};
+  if (updates.name !== undefined) payload.name = updates.name;
+  if (updates.radius !== undefined) payload.radius = updates.radius;
+  if (updates.lat !== undefined) payload.lat = updates.lat;
+  if (updates.lng !== undefined) payload.lng = updates.lng;
+  if (updates.active !== undefined) payload.active = updates.active;
+
+  const { data, error } = await (supabase as any)
+    .from("safe_zones")
+    .update(payload)
+    .eq("id", id)
+    .select()
+    .single();
+
+  if (error) {
+    console.error("[updateSafeZoneInSupabase] Error:", error);
+    throw new Error(error.message || "Failed to update safe zone in Supabase.");
+  }
+
+  return {
+    id: data.id,
+    parentId: data.parent_id,
+    name: data.name,
+    active: data.active,
+    radius: data.radius,
+    lat: Number(data.lat),
+    lng: Number(data.lng),
+    createdAt: data.created_at,
+  };
+}
+
+export async function deleteSafeZoneFromSupabase(id: string): Promise<void> {
+  if (!isSupabaseConfigured) throw new Error("Supabase is not configured.");
+  const { error } = await (supabase as any)
+    .from("safe_zones")
+    .delete()
+    .eq("id", id);
+
+  if (error) {
+    console.error("[deleteSafeZoneFromSupabase] Error:", error);
+    throw new Error(error.message || "Failed to delete safe zone from Supabase.");
+  }
+}
+
+// ==============================================================================
+// 9. HOMEWORK TASKS OPERATIONS (PHASE 2.1)
+// ==============================================================================
+
+export async function fetchHomeworkFromSupabase(childId?: string): Promise<HomeworkTask[]> {
+  if (!isSupabaseConfigured) return [];
+  let query = (supabase as any)
+    .from("homework")
+    .select("*")
+    .order("created_at", { ascending: false });
+
+  if (childId) {
+    query = query.eq("child_id", childId);
+  }
+
+  const { data, error } = await query;
+  if (error) {
+    console.error("[fetchHomeworkFromSupabase] Error:", error);
+    throw new Error(error.message || "Failed to fetch homework from Supabase.");
+  }
+
+  return (data || []).map((row: any): HomeworkTask => ({
+    id: row.id,
+    childId: row.child_id,
+    title: row.title,
+    subject: row.subject,
+    dueDate: row.due_date || "",
+    completed: Boolean(row.completed),
+    notes: row.notes || undefined,
+  }));
+}
+
+export async function createHomeworkInSupabase(task: {
+  childId?: string;
+  title: string;
+  subject: string;
+  dueDate?: string;
+  notes?: string;
+}): Promise<HomeworkTask> {
+  if (!isSupabaseConfigured) throw new Error("Supabase is not configured.");
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.user?.id) throw new Error("Authentication required to create homework task.");
+
+  const effectiveChildId = task.childId || session.user.id;
+
+  const payload = {
+    child_id: effectiveChildId,
+    title: task.title,
+    subject: task.subject,
+    due_date: task.dueDate ? new Date(task.dueDate).toISOString() : null,
+    notes: task.notes || null,
+    completed: false,
+  };
+
+  const { data, error } = await (supabase as any)
+    .from("homework")
+    .insert(payload)
+    .select()
+    .single();
+
+  if (error) {
+    console.error("[createHomeworkInSupabase] Error:", error);
+    throw new Error(error.message || "Failed to create homework task in Supabase.");
+  }
+
+  return {
+    id: data.id,
+    childId: data.child_id,
+    title: data.title,
+    subject: data.subject,
+    dueDate: data.due_date || "",
+    completed: Boolean(data.completed),
+    notes: data.notes || undefined,
+  };
+}
+
+export async function updateHomeworkInSupabase(
+  id: string,
+  updates: Partial<{ title: string; subject: string; dueDate: string; completed: boolean; notes: string }>
+): Promise<HomeworkTask> {
+  if (!isSupabaseConfigured) throw new Error("Supabase is not configured.");
+
+  const payload: Record<string, any> = {};
+  if (updates.title !== undefined) payload.title = updates.title;
+  if (updates.subject !== undefined) payload.subject = updates.subject;
+  if (updates.dueDate !== undefined) payload.due_date = updates.dueDate ? new Date(updates.dueDate).toISOString() : null;
+  if (updates.completed !== undefined) payload.completed = updates.completed;
+  if (updates.notes !== undefined) payload.notes = updates.notes;
+
+  const { data, error } = await (supabase as any)
+    .from("homework")
+    .update(payload)
+    .eq("id", id)
+    .select()
+    .single();
+
+  if (error) {
+    console.error("[updateHomeworkInSupabase] Error:", error);
+    throw new Error(error.message || "Failed to update homework task in Supabase.");
+  }
+
+  return {
+    id: data.id,
+    childId: data.child_id,
+    title: data.title,
+    subject: data.subject,
+    dueDate: data.due_date || "",
+    completed: Boolean(data.completed),
+    notes: data.notes || undefined,
+  };
+}
+
+export async function deleteHomeworkFromSupabase(id: string): Promise<void> {
+  if (!isSupabaseConfigured) throw new Error("Supabase is not configured.");
+  const { error } = await (supabase as any)
+    .from("homework")
+    .delete()
+    .eq("id", id);
+
+  if (error) {
+    console.error("[deleteHomeworkFromSupabase] Error:", error);
+    throw new Error(error.message || "Failed to delete homework task from Supabase.");
+  }
+}
+
+// ==============================================================================
+// 10. DAILY GOALS OPERATIONS (PHASE 2.1)
+// ==============================================================================
+
+export async function fetchDailyGoalsFromSupabase(childId?: string): Promise<DailyGoal[]> {
+  if (!isSupabaseConfigured) return [];
+  let query = (supabase as any)
+    .from("daily_goals")
+    .select("*")
+    .order("created_at", { ascending: false });
+
+  if (childId) {
+    query = query.eq("child_id", childId);
+  }
+
+  const { data, error } = await query;
+  if (error) {
+    console.error("[fetchDailyGoalsFromSupabase] Error:", error);
+    throw new Error(error.message || "Failed to fetch daily goals from Supabase.");
+  }
+
+  return (data || []).map((row: any): DailyGoal => ({
+    id: row.id,
+    childId: row.child_id,
+    title: row.title,
+    category: row.category || "learning",
+    targetMinutes: row.target_minutes ?? 60,
+    completedMinutes: row.completed_minutes ?? 0,
+    completed: Boolean(row.completed),
+  }));
+}
+
+export async function createDailyGoalInSupabase(goal: {
+  childId?: string;
+  title: string;
+  category?: string;
+  targetMinutes?: number;
+  completedMinutes?: number;
+  completed?: boolean;
+}): Promise<DailyGoal> {
+  if (!isSupabaseConfigured) throw new Error("Supabase is not configured.");
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.user?.id) throw new Error("Authentication required to create daily goal.");
+
+  const effectiveChildId = goal.childId || session.user.id;
+
+  const payload = {
+    child_id: effectiveChildId,
+    title: goal.title,
+    category: goal.category || "learning",
+    target_minutes: goal.targetMinutes ?? 60,
+    completed_minutes: goal.completedMinutes ?? 0,
+    completed: goal.completed ?? false,
+  };
+
+  const { data, error } = await (supabase as any)
+    .from("daily_goals")
+    .insert(payload)
+    .select()
+    .single();
+
+  if (error) {
+    console.error("[createDailyGoalInSupabase] Error:", error);
+    throw new Error(error.message || "Failed to create daily goal in Supabase.");
+  }
+
+  return {
+    id: data.id,
+    childId: data.child_id,
+    title: data.title,
+    category: data.category,
+    targetMinutes: data.target_minutes,
+    completedMinutes: data.completed_minutes,
+    completed: Boolean(data.completed),
+  };
+}
+
+export async function updateDailyGoalInSupabase(
+  id: string,
+  updates: Partial<{ title: string; category: string; targetMinutes: number; completedMinutes: number; completed: boolean }>
+): Promise<DailyGoal> {
+  if (!isSupabaseConfigured) throw new Error("Supabase is not configured.");
+
+  const payload: Record<string, any> = {};
+  if (updates.title !== undefined) payload.title = updates.title;
+  if (updates.category !== undefined) payload.category = updates.category;
+  if (updates.targetMinutes !== undefined) payload.target_minutes = updates.targetMinutes;
+  if (updates.completedMinutes !== undefined) payload.completed_minutes = updates.completedMinutes;
+  if (updates.completed !== undefined) payload.completed = updates.completed;
+
+  const { data, error } = await (supabase as any)
+    .from("daily_goals")
+    .update(payload)
+    .eq("id", id)
+    .select()
+    .single();
+
+  if (error) {
+    console.error("[updateDailyGoalInSupabase] Error:", error);
+    throw new Error(error.message || "Failed to update daily goal in Supabase.");
+  }
+
+  return {
+    id: data.id,
+    childId: data.child_id,
+    title: data.title,
+    category: data.category,
+    targetMinutes: data.target_minutes,
+    completedMinutes: data.completed_minutes,
+    completed: Boolean(data.completed),
+  };
+}
+
+export async function deleteDailyGoalFromSupabase(id: string): Promise<void> {
+  if (!isSupabaseConfigured) throw new Error("Supabase is not configured.");
+  const { error } = await (supabase as any)
+    .from("daily_goals")
+    .delete()
+    .eq("id", id);
+
+  if (error) {
+    console.error("[deleteDailyGoalFromSupabase] Error:", error);
+    throw new Error(error.message || "Failed to delete daily goal from Supabase.");
+  }
+}
+
+// ==============================================================================
+// 11. ACTIVITY LOGS OPERATIONS (PHASE 2.1)
+// ==============================================================================
+
+export async function fetchActivityLogsFromSupabase(childId?: string, limitCount = 50): Promise<ActivityLog[]> {
+  if (!isSupabaseConfigured) return [];
+  let query = (supabase as any)
+    .from("activity_logs")
+    .select("*")
+    .order("created_at", { ascending: false })
+    .limit(limitCount);
+
+  if (childId) {
+    query = query.eq("child_id", childId);
+  }
+
+  const { data, error } = await query;
+  if (error) {
+    console.error("[fetchActivityLogsFromSupabase] Error:", error);
+    throw new Error(error.message || "Failed to fetch activity logs from Supabase.");
+  }
+
+  return (data || []).map((row: any): ActivityLog => ({
+    id: row.id,
+    childId: row.child_id,
+    type: (row.type as any) || "app",
+    title: row.app || row.type || "System Activity",
+    description: row.detail,
+    timestamp: row.created_at,
+    safetyLevel: (row.status === "warning" || row.status === "blocked") ? "warning" : "safe",
+    duration: row.duration ?? undefined,
+  }));
+}
+
+export async function recordActivityLogInSupabase(log: {
+  childId?: string;
+  parentId?: string;
+  type: string;
+  detail: string;
+  app?: string;
+  duration?: number;
+  category?: string;
+  status?: string;
+}): Promise<ActivityLog> {
+  if (!isSupabaseConfigured) throw new Error("Supabase is not configured.");
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.user?.id) throw new Error("Authentication required to record activity log.");
+
+  const callerProfile = await fetchUserProfile(session.user.id);
+  const effectiveParentId = log.parentId || (callerProfile?.role === "child" ? callerProfile.parentId : session.user.id);
+  const effectiveChildId = log.childId || (callerProfile?.role === "child" ? session.user.id : null);
+
+  if (!effectiveParentId) {
+    throw new Error("Cannot record activity log: parent_id could not be resolved.");
+  }
+
+  const payload = {
+    parent_id: effectiveParentId,
+    child_id: effectiveChildId,
+    type: log.type,
+    detail: log.detail,
+    app: log.app || null,
+    duration: log.duration || null,
+    category: log.category || null,
+    status: log.status || "normal",
+  };
+
+  const { data, error } = await (supabase as any)
+    .from("activity_logs")
+    .insert(payload)
+    .select()
+    .single();
+
+  if (error) {
+    console.error("[recordActivityLogInSupabase] Error:", error);
+    throw new Error(error.message || "Failed to record activity log in Supabase.");
+  }
+
+  return {
+    id: data.id,
+    childId: data.child_id,
+    type: (data.type as any) || "app",
+    title: data.app || data.type || "Activity Log",
+    description: data.detail,
+    timestamp: data.created_at,
+    safetyLevel: (data.status === "warning" || data.status === "blocked") ? "warning" : "safe",
+    duration: data.duration ?? undefined,
+  };
+}
+
+// ==============================================================================
+// 12. DANGEROUS EVENTS OPERATIONS (PHASE 2.1)
+// ==============================================================================
+
+export async function fetchDangerousEventsFromSupabase(childId?: string, limitCount = 50): Promise<DangerousEvent[]> {
+  if (!isSupabaseConfigured) return [];
+  let query = (supabase as any)
+    .from("dangerous_events")
+    .select("*")
+    .order("created_at", { ascending: false })
+    .limit(limitCount);
+
+  if (childId) {
+    query = query.eq("child_id", childId);
+  }
+
+  const { data, error } = await query;
+  if (error) {
+    console.error("[fetchDangerousEventsFromSupabase] Error:", error);
+    throw new Error(error.message || "Failed to fetch dangerous events from Supabase.");
+  }
+
+  return (data || []).map((row: any): DangerousEvent => ({
+    id: row.id,
+    parentId: row.parent_id,
+    childId: row.child_id,
+    category: row.category,
+    target: row.target,
+    riskLevel: row.risk_level as any,
+    confidence: row.confidence ?? 90,
+    reason: row.reason || undefined,
+    actionTaken: row.action_taken || undefined,
+    suggestedAction: row.suggested_action || undefined,
+    status: row.status || "blocked",
+    timestamp: row.created_at,
+  }));
+}
+
+export async function recordDangerousEventInSupabase(event: {
+  childId?: string;
+  parentId?: string;
+  category: string;
+  target: string;
+  riskLevel: 'low' | 'medium' | 'high' | 'critical';
+  confidence?: number;
+  reason?: string;
+  actionTaken?: string;
+  suggestedAction?: string;
+  status?: string;
+}): Promise<DangerousEvent> {
+  if (!isSupabaseConfigured) throw new Error("Supabase is not configured.");
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.user?.id) throw new Error("Authentication required to record dangerous event.");
+
+  const callerProfile = await fetchUserProfile(session.user.id);
+  const effectiveParentId = event.parentId || (callerProfile?.role === "child" ? callerProfile.parentId : session.user.id);
+  const effectiveChildId = event.childId || (callerProfile?.role === "child" ? session.user.id : null);
+
+  if (!effectiveParentId) {
+    throw new Error("Cannot record dangerous event: parent_id could not be resolved.");
+  }
+
+  const payload = {
+    parent_id: effectiveParentId,
+    child_id: effectiveChildId,
+    category: event.category,
+    target: event.target,
+    risk_level: event.riskLevel,
+    confidence: event.confidence ?? 90,
+    reason: event.reason || null,
+    action_taken: event.actionTaken || null,
+    suggested_action: event.suggestedAction || null,
+    status: event.status || "blocked",
+  };
+
+  const { data, error } = await (supabase as any)
+    .from("dangerous_events")
+    .insert(payload)
+    .select()
+    .single();
+
+  if (error) {
+    console.error("[recordDangerousEventInSupabase] Error:", error);
+    throw new Error(error.message || "Failed to record dangerous event in Supabase.");
+  }
+
+  return {
+    id: data.id,
+    parentId: data.parent_id,
+    childId: data.child_id,
+    category: data.category,
+    target: data.target,
+    riskLevel: data.risk_level,
+    confidence: data.confidence,
+    reason: data.reason || undefined,
+    actionTaken: data.action_taken || undefined,
+    suggestedAction: data.suggested_action || undefined,
+    status: data.status,
+    timestamp: data.created_at,
+  };
+}
+
+// ==============================================================================
+// 13. SYSTEM CONFIGURATION OPERATIONS (PHASE 2.1)
+// ==============================================================================
+
+const DEFAULT_PLATFORM_CONFIG: PlatformConfig = {
+  emergencyBroadcast: {
+    active: false,
+    message: "Standard platform monitoring active. All child protection neural engines operational.",
+    severity: "low",
+    updatedAt: new Date().toISOString(),
+  },
+  aiSafetyStrictness: "strict",
+  maxScreenTimeCap: 360,
+  defaultGpsIntervalSeconds: 30,
+  allowNewRegistrations: true,
+};
+
+export async function fetchPlatformConfigFromSupabase(): Promise<PlatformConfig> {
+  if (!isSupabaseConfigured) return DEFAULT_PLATFORM_CONFIG;
+  const { data, error } = await (supabase as any)
+    .from("system_config")
+    .select("key, value")
+    .eq("key", "platform_config")
+    .maybeSingle();
+
+  if (error) {
+    console.warn("[fetchPlatformConfigFromSupabase] Warning:", error.message);
+    return DEFAULT_PLATFORM_CONFIG;
+  }
+
+  if (data && data.value && typeof data.value === "object") {
+    return {
+      ...DEFAULT_PLATFORM_CONFIG,
+      ...data.value,
+    };
+  }
+
+  return DEFAULT_PLATFORM_CONFIG;
+}
+
+export async function updatePlatformConfigInSupabase(configUpdates: Partial<PlatformConfig>): Promise<PlatformConfig> {
+  if (!isSupabaseConfigured) throw new Error("Supabase is not configured.");
+
+  const current = await fetchPlatformConfigFromSupabase();
+  const merged: PlatformConfig = {
+    ...current,
+    ...configUpdates,
+    emergencyBroadcast: {
+      ...current.emergencyBroadcast,
+      ...(configUpdates.emergencyBroadcast || {}),
+      updatedAt: new Date().toISOString(),
+    },
+  };
+
+  const { error } = await (supabase as any)
+    .from("system_config")
+    .upsert({
+      key: "platform_config",
+      value: merged,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "key" });
+
+  if (error) {
+    console.error("[updatePlatformConfigInSupabase] Error:", error);
+    throw new Error(error.message || "Failed to update platform configuration in Supabase. Administrator authorization required.");
+  }
+
+  return merged;
+}
+
 
 
