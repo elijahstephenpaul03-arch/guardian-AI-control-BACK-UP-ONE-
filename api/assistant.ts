@@ -4,7 +4,7 @@ import {
   buildSystemInstruction,
   generateGroqCompletion,
   generateLocalHeuristicResponse
-} from "../src/lib/assistantHelper";
+} from "../src/lib/assistantHelper.js";
 
 function sendJsonResponse(res: any, statusCode: number, data: any) {
   if (typeof res.status === "function") {

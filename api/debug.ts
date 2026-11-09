@@ -1,4 +1,4 @@
-import { getGroqApiKey, getGeminiApiKey } from "../src/lib/assistantHelper";
+import { getGroqApiKey, getGeminiApiKey } from "../src/lib/assistantHelper.js";
 
 export default function handler(req: any, res: any) {
   res.setHeader("Access-Control-Allow-Origin", "*");
