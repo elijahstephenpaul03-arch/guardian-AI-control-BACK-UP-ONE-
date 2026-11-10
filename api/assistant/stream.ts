@@ -136,23 +136,35 @@ export default async function handler(req: any, res: any) {
     if (hasExternalAiKey) {
       console.log("[BEFORE_AI_FETCH] Initiating stream with active neural backend...");
       try {
-        let activeModelUsed = hasGeminiKey ? "Gemini Neural Engine" : "Groq Neural Engine";
+        let activeProvider: "groq" | "gemini" | "local" = hasGroqKey ? "groq" : (hasGeminiKey ? "gemini" : "local");
+        let activeModelUsed = hasGroqKey ? (modelName || "Groq AI") : (hasGeminiKey ? "Gemini (gemini-3.8-flash)" : "Guardian Neural Core (Offline Engine)");
+
         const streamResult = await streamGroqCompletion(
           systemInstruction,
           safeHistory,
           message,
-          (chunkText) => {
+          (chunkText, meta) => {
             if (!isClientDisconnected) {
-              sendEvent({ text: chunkText, provider: hasGeminiKey ? "gemini" : "groq", modelUsed: activeModelUsed });
+              if (meta?.provider) activeProvider = meta.provider;
+              if (meta?.modelUsed) activeModelUsed = meta.modelUsed;
+              sendEvent({ text: chunkText, provider: activeProvider, modelUsed: activeModelUsed });
             }
           },
-          modelName
+          modelName,
+          mode
         );
+
+        const finalProvider = streamResult.provider || (
+          streamResult.modelUsed.startsWith("Gemini") ? "gemini" :
+          streamResult.modelUsed.startsWith("Groq") ? "groq" : "local"
+        );
+
+        console.log(`[VERCEL /api/assistant/stream Success] Final Provider: ${finalProvider}, Model: ${streamResult.modelUsed}`);
 
         sendEvent({
           done: true,
           fullText: streamResult.text,
-          provider: hasGeminiKey ? "gemini" : "groq",
+          provider: finalProvider,
           modelUsed: streamResult.modelUsed
         });
         res.end();

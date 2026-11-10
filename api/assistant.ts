@@ -84,7 +84,11 @@ export default async function handler(req: any, res: any) {
 
     const groqApiKey = getGroqApiKey();
     const geminiApiKey = getGeminiApiKey();
-    const hasExternalKey = Boolean((groqApiKey && groqApiKey.length > 5) || (geminiApiKey && geminiApiKey.length > 5));
+    const hasGroq = Boolean(groqApiKey && groqApiKey.length > 5);
+    const hasGemini = Boolean(geminiApiKey && geminiApiKey.length > 5);
+    const hasExternalKey = hasGroq || hasGemini;
+
+    console.log(`[VERCEL /api/assistant] Incoming request: mode=${mode}, modelName=${modelName || "default"}, GroqConfigured=${hasGroq}, GeminiConfigured=${hasGemini}`);
 
     if (hasExternalKey) {
       try {
@@ -92,14 +96,22 @@ export default async function handler(req: any, res: any) {
           systemInstruction,
           safeHistory,
           message,
-          modelName
+          modelName,
+          mode
         );
+
+        const actualProvider = aiResult.provider || (
+          aiResult.modelUsed.startsWith("Gemini") ? "gemini" :
+          aiResult.modelUsed.startsWith("Groq") ? "groq" : "local"
+        );
+
+        console.log(`[VERCEL /api/assistant Success] Final Provider: ${actualProvider}, Model: ${aiResult.modelUsed}`);
 
         return sendJsonResponse(res, 200, {
           text: aiResult.text,
           groundingMetadata: null,
           modelUsed: aiResult.modelUsed,
-          provider: aiResult.modelUsed.startsWith("Gemini") ? "gemini" : "groq"
+          provider: actualProvider
         });
       } catch (aiErr: any) {
         console.warn("[VERCEL /api/assistant AI ERROR - FALLING BACK TO LOCAL CORE]", aiErr?.message);
@@ -112,7 +124,7 @@ export default async function handler(req: any, res: any) {
         });
       }
     } else {
-      // Offline fallback when no key configured
+      console.log("[VERCEL /api/assistant] No external keys configured. Serving Guardian Neural Core.");
       const fallbackText = generateLocalHeuristicResponse(systemInstruction, message, mode);
       return sendJsonResponse(res, 200, {
         text: fallbackText,

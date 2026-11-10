@@ -268,7 +268,13 @@ app.post(["/api/assistant", "/assistant"], async (req, res) => {
       systemInstruction,
       safeHistory,
       userMsg.trim(),
-      modelName
+      modelName,
+      mode
+    );
+
+    const actualProvider = aiResult.provider || (
+      aiResult.modelUsed.startsWith("Gemini") ? "gemini" :
+      aiResult.modelUsed.startsWith("Groq") ? "groq" : "local"
     );
 
     return res.json({
@@ -277,7 +283,7 @@ app.post(["/api/assistant", "/assistant"], async (req, res) => {
       message: aiResult.text,
       groundingMetadata: null,
       modelUsed: aiResult.modelUsed,
-      provider: "groq"
+      provider: actualProvider
     });
   } catch (err: any) {
     console.error("[SERVER ASSISTANT ERROR]", err?.message);
@@ -324,7 +330,8 @@ app.post(["/api/assistant/stream", "/assistant/stream"], async (req, res) => {
       (res as any).flushHeaders();
     }
 
-    let currentModelUsed = "Groq Neural Engine";
+    let currentProvider: "groq" | "gemini" | "local" = "groq";
+    let currentModelUsed = modelName || "Groq AI";
     const sendEvent = (data: any) => {
       if (res.writableEnded) return;
       res.write(`data: ${JSON.stringify(data)}\n\n`);
@@ -343,18 +350,24 @@ app.post(["/api/assistant/stream", "/assistant/stream"], async (req, res) => {
       systemInstruction,
       safeHistory,
       message,
-      (chunkText) => {
-        sendEvent({ text: chunkText, provider: "groq", modelUsed: currentModelUsed });
+      (chunkText, meta) => {
+        if (meta?.provider) currentProvider = meta.provider;
+        if (meta?.modelUsed) currentModelUsed = meta.modelUsed;
+        sendEvent({ text: chunkText, provider: currentProvider, modelUsed: currentModelUsed });
       },
-      modelName
+      modelName,
+      mode
     );
 
-    currentModelUsed = streamResult.modelUsed;
+    const finalProvider = streamResult.provider || (
+      streamResult.modelUsed.startsWith("Gemini") ? "gemini" :
+      streamResult.modelUsed.startsWith("Groq") ? "groq" : "local"
+    );
 
     sendEvent({
       done: true,
       fullText: streamResult.text,
-      provider: "groq",
+      provider: finalProvider,
       modelUsed: streamResult.modelUsed
     });
     res.end();
@@ -480,13 +493,27 @@ async function setupServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  const server = app.listen(PORT, "0.0.0.0", () => {
     console.log(`Guardian AI Server running at http://0.0.0.0:${PORT}`);
+  });
+
+  server.on("error", (err: any) => {
+    if (err.code === "EADDRINUSE") {
+      console.warn(`[PORT CONFLICT] Port ${PORT} busy, retrying in 1s...`);
+      setTimeout(() => {
+        server.close();
+        app.listen(PORT, "0.0.0.0");
+      }, 1000);
+    } else {
+      console.error("[SERVER LISTEN ERROR]", err);
+    }
   });
 }
 
 if (!process.env.VERCEL) {
-  setupServer();
+  setupServer().catch((err) => {
+    console.error("[SERVER FATAL STARTUP ERROR]", err);
+  });
 }
 
 export default app;

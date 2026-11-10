@@ -1374,8 +1374,11 @@ export default function GuardianAssistant({
                 onChange={(e) => setSelectedModel(e.target.value)}
                 className="bg-slate-900 border border-slate-800 text-cyan-400 font-bold rounded px-1.5 py-0.5 focus:outline-none focus:border-cyan-500 cursor-pointer text-[10px]"
               >
-                <option value="openai/gpt-oss-120b">Groq 120B Versatile (Recommended)</option>
+                <option value="llama-3.3-70b-versatile">Groq Llama 3.3 70B (Recommended)</option>
+                <option value="llama-3.1-8b-instant">Groq Llama 3.1 8B (Instant)</option>
+                <option value="openai/gpt-oss-120b">Groq 120B Versatile</option>
                 <option value="openai/gpt-oss-20b">Groq 20B Fast</option>
+                <option value="gemini-3.8-flash">Google Gemini 3.8 Flash</option>
                 <option value="qwen/qwen3.8-27b">Qwen 27B</option>
                 <option value="canopylabs/orpheus-v1-english">Orpheus English</option>
               </select>

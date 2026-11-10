@@ -20,6 +20,12 @@ export function getGeminiApiKey(): string {
   return rawKey.replace(/^["']|["']$/g, "").trim();
 }
 
+export interface CompletionResult {
+  text: string;
+  modelUsed: string;
+  provider: "groq" | "gemini" | "local";
+}
+
 // Cache active models from Groq /v1/models to avoid 404 / 400 decommissioned models
 let cachedAvailableModels: string[] | null = null;
 let lastModelFetchTime = 0;
@@ -29,6 +35,9 @@ const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const DEFAULT_MODEL_CANDIDATES = [
   "openai/gpt-oss-120b",
   "openai/gpt-oss-20b",
+  "llama-3.3-70b-versatile",
+  "llama-3.1-8b-instant",
+  "mixtral-8x7b-32768",
   "qwen/qwen3.8-27b",
   "canopylabs/orpheus-v1-english"
 ];
@@ -63,8 +72,11 @@ export async function getActiveGroqModels(): Promise<string[]> {
 
       if (chatModels.length > 0) {
         const preferredOrder = [
+          "llama-3.3-70b-versatile",
+          "llama-3.1-8b-instant",
           "openai/gpt-oss-120b",
           "openai/gpt-oss-20b",
+          "mixtral-8x7b-32768",
           "qwen/qwen3.8-27b",
           "canopylabs/orpheus-v1-english",
           "allam-2-7b"
@@ -89,13 +101,9 @@ export async function resolveModelCandidates(preferredModel?: string): Promise<s
   const activeModels = await getActiveGroqModels();
   const candidates: string[] = [];
 
-  // If a preferred model was requested and is confirmed active on Groq, put it first
+  // If a preferred model was requested and is not a Gemini model, prioritize it first
   if (preferredModel && !preferredModel.startsWith("gemini")) {
-    if (activeModels.length === 0 || activeModels.includes(preferredModel)) {
-      candidates.push(preferredModel);
-    } else {
-      console.warn(`[Groq Model Selection] Preferred model "${preferredModel}" is not in active models list. Selecting verified active model.`);
-    }
+    candidates.push(preferredModel);
   }
 
   for (const m of activeModels) {
@@ -234,12 +242,14 @@ export async function generateGeminiCompletion(
   systemInstruction: string,
   history: any[],
   currentMessage: string,
-  preferredModel?: string
-): Promise<{ text: string; modelUsed: string }> {
+  preferredModel?: string,
+  mode: string = "parent"
+): Promise<CompletionResult> {
   const geminiKey = getGeminiApiKey();
   if (!geminiKey) {
-    const fallbackText = generateLocalHeuristicResponse(systemInstruction, currentMessage);
-    return { text: fallbackText, modelUsed: "Guardian Neural Core (Offline Engine)" };
+    console.log("[Gemini AI] No Gemini API key detected. Falling back to Priority 3: Offline Core.");
+    const fallbackText = generateLocalHeuristicResponse(systemInstruction, currentMessage, mode);
+    return { text: fallbackText, modelUsed: "Guardian Neural Core (Offline Engine)", provider: "local" };
   }
 
   const modelToUse = preferredModel && preferredModel.startsWith("gemini")
@@ -247,6 +257,7 @@ export async function generateGeminiCompletion(
     : "gemini-3.8-flash";
 
   try {
+    console.log(`[Gemini AI] Attempting completion with model: ${modelToUse}...`);
     const { GoogleGenAI } = await import("@google/genai");
     const ai = new GoogleGenAI({
       apiKey: geminiKey,
@@ -282,29 +293,34 @@ export async function generateGeminiCompletion(
     });
 
     const text = response.text || "";
-    if (text) {
-      return { text, modelUsed: `Gemini (${modelToUse})` };
+    if (text && text.trim()) {
+      console.log(`[Chatbot Success] Live Gemini completion generated with model: ${modelToUse}`);
+      return { text, modelUsed: `Gemini (${modelToUse})`, provider: "gemini" };
     }
+    throw new Error("Gemini returned empty text response");
   } catch (err: any) {
     console.warn(`[Gemini AI Completion Warning] ${err?.message}`);
   }
 
-  const fallbackText = generateLocalHeuristicResponse(systemInstruction, currentMessage);
-  return { text: fallbackText, modelUsed: "Guardian Neural Core (Offline Engine)" };
+  console.log("[Gemini AI Failed] Falling back to Priority 3: Offline Core.");
+  const fallbackText = generateLocalHeuristicResponse(systemInstruction, currentMessage, mode);
+  return { text: fallbackText, modelUsed: "Guardian Neural Core (Offline Engine)", provider: "local" };
 }
 
 export async function streamGeminiCompletion(
   systemInstruction: string,
   history: any[],
   currentMessage: string,
-  onChunk: (chunkText: string) => void,
-  preferredModel?: string
-): Promise<{ text: string; modelUsed: string }> {
+  onChunk: (chunkText: string, meta?: { provider: "groq" | "gemini" | "local"; modelUsed: string }) => void,
+  preferredModel?: string,
+  mode: string = "parent"
+): Promise<CompletionResult> {
   const geminiKey = getGeminiApiKey();
   if (!geminiKey) {
-    const fallbackText = generateLocalHeuristicResponse(systemInstruction, currentMessage);
-    onChunk(fallbackText);
-    return { text: fallbackText, modelUsed: "Guardian Neural Core (Offline Engine)" };
+    console.log("[Gemini Stream] No Gemini API key detected. Falling back to Priority 3: Offline Core.");
+    const fallbackText = generateLocalHeuristicResponse(systemInstruction, currentMessage, mode);
+    onChunk(fallbackText, { provider: "local", modelUsed: "Guardian Neural Core (Offline Engine)" });
+    return { text: fallbackText, modelUsed: "Guardian Neural Core (Offline Engine)", provider: "local" };
   }
 
   const modelToUse = preferredModel && preferredModel.startsWith("gemini")
@@ -312,6 +328,7 @@ export async function streamGeminiCompletion(
     : "gemini-3.8-flash";
 
   try {
+    console.log(`[Gemini Stream] Attempting stream with model: ${modelToUse}...`);
     const { GoogleGenAI } = await import("@google/genai");
     const ai = new GoogleGenAI({
       apiKey: geminiKey,
@@ -351,216 +368,330 @@ export async function streamGeminiCompletion(
       const chunkText = chunk.text || "";
       if (chunkText) {
         accumulatedText += chunkText;
-        onChunk(chunkText);
+        onChunk(chunkText, { provider: "gemini", modelUsed: `Gemini (${modelToUse})` });
       }
     }
 
     if (accumulatedText.trim()) {
-      return { text: accumulatedText, modelUsed: `Gemini (${modelToUse})` };
+      console.log(`[Chatbot Success] Live Gemini stream completed with model: ${modelToUse}`);
+      return { text: accumulatedText, modelUsed: `Gemini (${modelToUse})`, provider: "gemini" };
     }
+    throw new Error("Gemini stream returned empty content");
   } catch (err: any) {
     console.warn(`[Gemini AI Stream Warning] ${err?.message}`);
   }
 
-  const fallbackText = generateLocalHeuristicResponse(systemInstruction, currentMessage);
-  onChunk(fallbackText);
-  return { text: fallbackText, modelUsed: "Guardian Neural Core (Offline Engine)" };
+  console.log("[Gemini Stream Failed] Falling back to Priority 3: Offline Core.");
+  const fallbackText = generateLocalHeuristicResponse(systemInstruction, currentMessage, mode);
+  onChunk(fallbackText, { provider: "local", modelUsed: "Guardian Neural Core (Offline Engine)" });
+  return { text: fallbackText, modelUsed: "Guardian Neural Core (Offline Engine)", provider: "local" };
 }
 
 export async function generateGroqCompletion(
   systemInstruction: string,
   history: any[],
   currentMessage: string,
-  preferredModel?: string
-): Promise<{ text: string; modelUsed: string }> {
-  // If Gemini model requested or Gemini key present and Groq key absent, use Gemini
+  preferredModel?: string,
+  mode: string = "parent"
+): Promise<CompletionResult> {
   const geminiKey = getGeminiApiKey();
   const groqApiKey = getGroqApiKey();
-  if ((preferredModel && preferredModel.startsWith("gemini")) || (!groqApiKey && geminiKey)) {
-    return generateGeminiCompletion(systemInstruction, history, currentMessage, preferredModel);
-  }
+  const hasGroq = Boolean(groqApiKey && groqApiKey.length > 5);
+  const hasGemini = Boolean(geminiKey && geminiKey.length > 5);
 
-  if (!groqApiKey) {
-    if (geminiKey) {
-      return generateGeminiCompletion(systemInstruction, history, currentMessage, preferredModel);
+  console.log(`[Chatbot Router] Request starting. GroqConfigured=${hasGroq}, GeminiConfigured=${hasGemini}, PreferredModel=${preferredModel || "default"}`);
+
+  // If a Gemini model was explicitly selected, run Gemini directly
+  if (preferredModel && preferredModel.startsWith("gemini")) {
+    if (hasGemini) {
+      return generateGeminiCompletion(systemInstruction, history, currentMessage, preferredModel, mode);
     }
-    const fallbackText = generateLocalHeuristicResponse(systemInstruction, currentMessage);
-    return { text: fallbackText, modelUsed: "Guardian Neural Core (Offline Engine)" };
+    console.log(`[Chatbot Router] Gemini model explicitly requested but Gemini key not found. Evaluating Groq fallback...`);
   }
 
-  const modelsToTry = await resolveModelCandidates(preferredModel);
-  const messages = buildGroqMessages(systemInstruction, history, currentMessage);
+  // Priority 1: Live Groq AI
+  if (hasGroq) {
+    const modelsToTry = await resolveModelCandidates(preferredModel);
+    const messages = buildGroqMessages(systemInstruction, history, currentMessage);
+    let fallbackReason = "";
 
-  let lastError: any = null;
-  for (const model of modelsToTry) {
+    console.log(`[Chatbot Priority 1] Live Groq AI - Evaluating ${modelsToTry.length} model candidate(s)...`);
+
+    for (const model of modelsToTry) {
+      try {
+        console.log(`[Groq AI] Attempting completion with model: ${model}`);
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 18000);
+
+        const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${groqApiKey}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            model,
+            messages,
+            temperature: 0.7
+          }),
+          signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+
+        if (res.status === 401) {
+          const errBody = await res.text().catch(() => "");
+          console.error(`[Groq Auth Error 401]: Invalid API key. Bypassing remaining Groq models.`, errBody);
+          fallbackReason = "Groq HTTP 401 Unauthorized (Invalid API Key)";
+          break; // Stop attempting other models with invalid key; immediately proceed to Gemini
+        }
+
+        if (res.status === 403) {
+          const errBody = await res.text().catch(() => "");
+          console.warn(`[Groq Permission Error 403] Model ${model} forbidden: ${errBody}`);
+          fallbackReason = `Groq HTTP 403 Forbidden for model ${model}`;
+          continue; // Try next candidate
+        }
+
+        if (res.status === 404) {
+          const errBody = await res.text().catch(() => "");
+          console.warn(`[Groq Model Unavailable 404] Model ${model} not found: ${errBody}`);
+          fallbackReason = `Groq HTTP 404 Not Found for model ${model}`;
+          continue; // Try next candidate
+        }
+
+        if (res.status === 429) {
+          console.warn(`[Groq Rate Limited 429] Model ${model} rate limited.`);
+          fallbackReason = `Groq HTTP 429 Rate Limited for model ${model}`;
+          continue; // Try next candidate
+        }
+
+        if (!res.ok) {
+          const errBody = await res.text().catch(() => "");
+          console.warn(`[Groq Server Error ${res.status}] Model ${model}: ${errBody}`);
+          fallbackReason = `Groq HTTP ${res.status} Error for model ${model}`;
+          continue; // Try next candidate
+        }
+
+        const data = await res.json();
+        const content = data.choices?.[0]?.message?.content;
+        if (content && typeof content === "string" && content.trim()) {
+          console.log(`[Chatbot Success] Response generated via Live Groq AI (${model})`);
+          return { text: content, modelUsed: `Groq (${model})`, provider: "groq" };
+        }
+      } catch (err: any) {
+        console.warn(`[Groq AI Execution Warning] Model ${model} failed: ${err?.message}`);
+        fallbackReason = `Groq Execution Error (${err?.message || "unknown"})`;
+      }
+    }
+
+    console.warn(`[Groq AI Exhausted] All Groq candidates failed. Reason: ${fallbackReason}. Transitioning to Priority 2: Live Gemini AI.`);
+  } else {
+    console.log(`[Chatbot Priority 1 Skipped] Groq API key is not configured. Proceeding to Priority 2: Live Gemini AI.`);
+  }
+
+  // Priority 2: Live Gemini AI
+  if (hasGemini) {
+    console.log(`[Chatbot Priority 2] Attempting Live Gemini AI fallback...`);
     try {
-      console.log(`[Groq AI] Requesting completion with model: ${model}`);
-      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${groqApiKey}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          model,
-          messages,
-          temperature: 0.7
-        })
-      });
-
-      if (res.status === 401) {
-        const errBody = await res.text().catch(() => "");
-        console.error(`[Groq Auth Error 401]:`, errBody);
-        break; // Stop attempting other models if key is invalid
+      const geminiResult = await generateGeminiCompletion(
+        systemInstruction,
+        history,
+        currentMessage,
+        preferredModel && preferredModel.startsWith("gemini") ? preferredModel : "gemini-3.8-flash",
+        mode
+      );
+      if (geminiResult.provider === "gemini") {
+        console.log(`[Chatbot Success] Fallback response generated via Live Gemini AI (${geminiResult.modelUsed})`);
+        return geminiResult;
       }
-
-      if (res.status === 429) {
-        console.warn(`[Groq AI] Model ${model} rate limited (429). Trying next model...`);
-        lastError = new Error("Groq API rate limit reached.");
-        continue;
-      }
-
-      if (!res.ok) {
-        const errBody = await res.text().catch(() => "");
-        console.warn(`[Groq AI] Model ${model} returned HTTP ${res.status}: ${errBody}`);
-        lastError = new Error(`Groq API returned HTTP ${res.status}`);
-        continue;
-      }
-
-      const data = await res.json();
-      const content = data.choices?.[0]?.message?.content;
-      if (content) {
-        return { text: content, modelUsed: `Groq (${model})` };
-      }
-    } catch (err: any) {
-      console.warn(`[Groq AI Execution Warning] Model ${model} failed:`, err?.message);
-      lastError = err;
+    } catch (geminiErr: any) {
+      console.warn(`[Gemini Fallback Error] ${geminiErr?.message}`);
     }
+    console.warn(`[Gemini AI Exhausted] Live Gemini AI fallback failed. Transitioning to Priority 3: Offline Core.`);
+  } else {
+    console.log(`[Chatbot Priority 2 Skipped] Gemini API key is not configured. Proceeding to Priority 3: Offline Core.`);
   }
 
-  console.warn("[Groq AI Completion] All candidate models failed or unavailable. Falling back to local neural core.", lastError?.message);
-  const fallbackText = generateLocalHeuristicResponse(systemInstruction, currentMessage);
-  return { text: fallbackText, modelUsed: "Guardian Neural Core (Offline Engine)" };
+  // Priority 3: Offline Guardian Neural Core
+  console.log(`[Chatbot Priority 3] Serving Guardian Neural Core (Offline Engine).`);
+  const fallbackText = generateLocalHeuristicResponse(systemInstruction, currentMessage, mode);
+  return { text: fallbackText, modelUsed: "Guardian Neural Core (Offline Engine)", provider: "local" };
 }
 
 export async function streamGroqCompletion(
   systemInstruction: string,
   history: any[],
   currentMessage: string,
-  onChunk: (chunkText: string) => void,
-  preferredModel?: string
-): Promise<{ text: string; modelUsed: string }> {
+  onChunk: (chunkText: string, meta?: { provider: "groq" | "gemini" | "local"; modelUsed: string }) => void,
+  preferredModel?: string,
+  mode: string = "parent"
+): Promise<CompletionResult> {
   const geminiKey = getGeminiApiKey();
   const groqApiKey = getGroqApiKey();
-  if ((preferredModel && preferredModel.startsWith("gemini")) || (!groqApiKey && geminiKey)) {
-    return streamGeminiCompletion(systemInstruction, history, currentMessage, onChunk, preferredModel);
-  }
+  const hasGroq = Boolean(groqApiKey && groqApiKey.length > 5);
+  const hasGemini = Boolean(geminiKey && geminiKey.length > 5);
 
-  if (!groqApiKey) {
-    if (geminiKey) {
-      return streamGeminiCompletion(systemInstruction, history, currentMessage, onChunk, preferredModel);
+  console.log(`[Chatbot Stream Router] Request starting. GroqConfigured=${hasGroq}, GeminiConfigured=${hasGemini}, PreferredModel=${preferredModel || "default"}`);
+
+  // If a Gemini model was explicitly selected, stream Gemini directly
+  if (preferredModel && preferredModel.startsWith("gemini")) {
+    if (hasGemini) {
+      return streamGeminiCompletion(systemInstruction, history, currentMessage, onChunk, preferredModel, mode);
     }
-    const fallbackText = generateLocalHeuristicResponse(systemInstruction, currentMessage);
-    onChunk(fallbackText);
-    return { text: fallbackText, modelUsed: "Guardian Neural Core (Offline Engine)" };
+    console.log(`[Chatbot Stream Router] Gemini stream requested but Gemini key not found. Evaluating Groq fallback...`);
   }
 
-  const modelsToTry = await resolveModelCandidates(preferredModel);
-  const messages = buildGroqMessages(systemInstruction, history, currentMessage);
+  // Priority 1: Live Groq AI Stream
+  if (hasGroq) {
+    const modelsToTry = await resolveModelCandidates(preferredModel);
+    const messages = buildGroqMessages(systemInstruction, history, currentMessage);
+    let fallbackReason = "";
 
-  let lastError: any = null;
-  for (const model of modelsToTry) {
-    try {
-      console.log(`[Groq Stream] Requesting stream with model: ${model}`);
-      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${groqApiKey}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          model,
-          messages,
-          temperature: 0.7,
-          stream: true
-        })
-      });
+    console.log(`[Chatbot Stream Priority 1] Live Groq AI Stream - Evaluating ${modelsToTry.length} model candidate(s)...`);
 
-      if (res.status === 401) {
-        const errBody = await res.text().catch(() => "");
-        console.error(`[Groq Stream Auth Error 401]:`, errBody);
-        break; // Stop attempting other models if key is invalid
-      }
+    for (const model of modelsToTry) {
+      try {
+        console.log(`[Groq Stream] Attempting stream with model: ${model}`);
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 20000);
 
-      if (res.status === 429) {
-        console.warn(`[Groq Stream] Model ${model} rate limited (429). Trying next model...`);
-        lastError = new Error("Groq API rate limit reached.");
-        continue;
-      }
+        const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${groqApiKey}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            model,
+            messages,
+            temperature: 0.7,
+            stream: true
+          }),
+          signal: controller.signal
+        });
+        clearTimeout(timeoutId);
 
-      if (!res.ok || !res.body) {
-        const errBody = await res.text().catch(() => "");
-        console.warn(`[Groq Stream] Model ${model} returned HTTP ${res.status}: ${errBody}`);
-        lastError = new Error(`Groq API returned HTTP ${res.status}`);
-        continue;
-      }
+        if (res.status === 401) {
+          const errBody = await res.text().catch(() => "");
+          console.error(`[Groq Stream Auth Error 401]: Invalid API key. Bypassing remaining Groq models.`, errBody);
+          fallbackReason = "Groq HTTP 401 Unauthorized (Invalid API Key)";
+          break; // Stop attempting other models with invalid key; immediately proceed to Gemini
+        }
 
-      let accumulatedText = "";
-      const decoder = new TextDecoder("utf-8");
-      let buffer = "";
+        if (res.status === 403) {
+          const errBody = await res.text().catch(() => "");
+          console.warn(`[Groq Stream Permission Error 403] Model ${model} forbidden: ${errBody}`);
+          fallbackReason = `Groq HTTP 403 Forbidden for model ${model}`;
+          continue;
+        }
 
-      const processChunk = (chunkValue: Uint8Array | ArrayBuffer | string) => {
-        const decoded = typeof chunkValue === "string" ? chunkValue : decoder.decode(chunkValue, { stream: true });
-        buffer += decoded;
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
+        if (res.status === 404) {
+          const errBody = await res.text().catch(() => "");
+          console.warn(`[Groq Stream Model Unavailable 404] Model ${model} not found: ${errBody}`);
+          fallbackReason = `Groq HTTP 404 Not Found for model ${model}`;
+          continue;
+        }
 
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed || trimmed === "data: [DONE]") continue;
-          if (trimmed.startsWith("data: ")) {
-            try {
-              const parsed = JSON.parse(trimmed.slice(6));
-              const content = parsed.choices?.[0]?.delta?.content || "";
-              if (content) {
-                accumulatedText += content;
-                onChunk(content);
+        if (res.status === 429) {
+          console.warn(`[Groq Stream Rate Limited 429] Model ${model} rate limited.`);
+          fallbackReason = `Groq HTTP 429 Rate Limited for model ${model}`;
+          continue;
+        }
+
+        if (!res.ok || !res.body) {
+          const errBody = await res.text().catch(() => "");
+          console.warn(`[Groq Stream Server Error ${res.status}] Model ${model}: ${errBody}`);
+          fallbackReason = `Groq HTTP ${res.status} Error for model ${model}`;
+          continue;
+        }
+
+        let accumulatedText = "";
+        const decoder = new TextDecoder("utf-8");
+        let buffer = "";
+
+        const processChunk = (chunkValue: Uint8Array | ArrayBuffer | string) => {
+          const decoded = typeof chunkValue === "string" ? chunkValue : decoder.decode(chunkValue, { stream: true });
+          buffer += decoded;
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed === "data: [DONE]") continue;
+            if (trimmed.startsWith("data: ")) {
+              try {
+                const parsed = JSON.parse(trimmed.slice(6));
+                const content = parsed.choices?.[0]?.delta?.content || "";
+                if (content) {
+                  accumulatedText += content;
+                  onChunk(content, { provider: "groq", modelUsed: `Groq (${model})` });
+                }
+              } catch (e) {
+                // Ignore partial JSON chunk
               }
-            } catch (e) {
-              // Ignore partial JSON chunk parsing errors
             }
           }
-        }
-      };
+        };
 
-      if (typeof (res.body as any).getReader === "function") {
-        const reader = (res.body as any).getReader();
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          processChunk(value);
+        if (typeof (res.body as any).getReader === "function") {
+          const reader = (res.body as any).getReader();
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            processChunk(value);
+          }
+        } else if (res.body && typeof (res.body as any)[Symbol.asyncIterator] === "function") {
+          for await (const chunk of res.body as any) {
+            processChunk(chunk);
+          }
+        } else {
+          throw new Error("Response body is not a readable stream.");
         }
-      } else if (res.body && typeof (res.body as any)[Symbol.asyncIterator] === "function") {
-        for await (const chunk of res.body as any) {
-          processChunk(chunk);
-        }
-      } else {
-        throw new Error("Response body is not a readable stream.");
-      }
 
-      if (accumulatedText.trim()) {
-        return { text: accumulatedText, modelUsed: `Groq (${model})` };
+        if (accumulatedText.trim()) {
+          console.log(`[Chatbot Success] Stream completed via Live Groq AI (${model})`);
+          return { text: accumulatedText, modelUsed: `Groq (${model})`, provider: "groq" };
+        }
+      } catch (err: any) {
+        console.warn(`[Groq Stream Execution Warning] Model ${model} stream error: ${err?.message}`);
+        fallbackReason = `Groq Stream Execution Error (${err?.message || "unknown"})`;
       }
-    } catch (err: any) {
-      console.warn(`[Groq Stream Execution Warning] Model ${model} stream failed:`, err?.message);
-      lastError = err;
     }
+
+    console.warn(`[Groq Stream Exhausted] All candidate models failed. Reason: ${fallbackReason || "No content streamed"}. Transitioning to Priority 2: Live Gemini AI.`);
+  } else {
+    console.log(`[Chatbot Stream Priority 1 Skipped] Groq API key is not configured. Proceeding to Priority 2: Live Gemini AI.`);
   }
 
-  console.warn("[Groq Stream Completion] All candidate models failed or unavailable. Falling back to local neural core.", lastError?.message);
-  const fallbackText = generateLocalHeuristicResponse(systemInstruction, currentMessage);
-  onChunk(fallbackText);
-  return { text: fallbackText, modelUsed: "Guardian Neural Core (Offline Engine)" };
+  // Priority 2: Live Gemini AI Stream
+  if (hasGemini) {
+    console.log(`[Chatbot Stream Priority 2] Attempting Live Gemini AI streaming fallback...`);
+    try {
+      const geminiResult = await streamGeminiCompletion(
+        systemInstruction,
+        history,
+        currentMessage,
+        onChunk,
+        preferredModel && preferredModel.startsWith("gemini") ? preferredModel : "gemini-3.8-flash",
+        mode
+      );
+      if (geminiResult.provider === "gemini") {
+        console.log(`[Chatbot Success] Fallback stream completed via Live Gemini AI (${geminiResult.modelUsed})`);
+        return geminiResult;
+      }
+    } catch (geminiErr: any) {
+      console.warn(`[Gemini Stream Fallback Error] ${geminiErr?.message}`);
+    }
+    console.warn(`[Gemini Stream Exhausted] Live Gemini AI stream fallback failed. Transitioning to Priority 3: Offline Core.`);
+  } else {
+    console.log(`[Chatbot Stream Priority 2 Skipped] Gemini API key is not configured. Proceeding to Priority 3: Offline Core.`);
+  }
+
+  // Priority 3: Offline Guardian Neural Core
+  console.log(`[Chatbot Stream Priority 3] Serving Guardian Neural Core (Offline Engine).`);
+  const fallbackText = generateLocalHeuristicResponse(systemInstruction, currentMessage, mode);
+  onChunk(fallbackText, { provider: "local", modelUsed: "Guardian Neural Core (Offline Engine)" });
+  return { text: fallbackText, modelUsed: "Guardian Neural Core (Offline Engine)", provider: "local" };
 }
 
 // Intelligent fallback generator in case external APIs are temporarily unavailable
