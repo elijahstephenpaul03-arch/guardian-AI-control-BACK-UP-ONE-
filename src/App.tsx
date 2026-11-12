@@ -89,8 +89,9 @@ export default function App() {
   const [isDarkMode, setIsDarkMode] = useState<boolean>(true);
   const [showTourModal, setShowTourModal] = useState<boolean>(false);
   const { pathname, search, navigate } = useNavigation();
+  const isDemoRoute = pathname.startsWith("/demo") || search.includes("demo=true") || search.includes("demo");
 
-  const sync = useFirebaseSync();
+  const sync = useFirebaseSync({ enabled: !isDemoRoute });
   const supabaseAuth = useSupabaseAuth();
 
   const isSupabaseActive = supabaseAuth.isSupabaseMode;
@@ -372,7 +373,7 @@ export default function App() {
         <main className="flex-1 flex flex-col">
           <Dashboard syncProps={demoParentSync} activeTabFromUrl={requestedTab} />
         </main>
-        <GuardianAssistant viewMode="dashboard" user={demoParentSync.user} userData={demoParentSync.userData} />
+        <GuardianAssistant viewMode="dashboard" user={demoParentSync.user} userData={demoParentSync.userData} isDemoMode={true} />
         <FeatureTourModal isOpen={showTourModal} onClose={() => setShowTourModal(false)} />
       </div>
     );

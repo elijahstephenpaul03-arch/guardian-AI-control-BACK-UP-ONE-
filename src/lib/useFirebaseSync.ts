@@ -509,7 +509,7 @@ export async function executeResolveSosAlert(params: ResolveSosAlertParams): Pro
   return { alertId, resolvedAt: resolvePayload.resolvedAt, resolvedBy: user.uid };
 }
 
-export function useFirebaseSync() {
+export function useFirebaseSync(options: { enabled?: boolean } = { enabled: true }) {
   const [user, setUser] = useState<User | null>(null);
   const [userData, setUserData] = useState<{ 
     role: UserRole | null; 
@@ -523,7 +523,7 @@ export function useFirebaseSync() {
     disconnectedMessage?: string;
     disconnectedAt?: string;
   } | null>(null);
-  const [authLoading, setAuthLoading] = useState(true);
+  const [authLoading, setAuthLoading] = useState(options?.enabled !== false);
   const [isGuestMode, setIsGuestMode] = useState(false);
   const [dbLoading, setDbLoading] = useState(false);
 
@@ -786,6 +786,11 @@ export function useFirebaseSync() {
 
   // Monitor auth state changes and fetch roles
   useEffect(() => {
+    if (options?.enabled === false) {
+      setAuthLoading(false);
+      return;
+    }
+
     console.log("[onAuthStateChanged] Setting up auth state changed listener...");
     
     // Safety watchdog: ensure authLoading never blocks the UI indefinitely if Firebase Auth resolution is delayed
@@ -964,9 +969,11 @@ export function useFirebaseSync() {
 
     return () => {
       clearTimeout(safetyTimeout);
-      unsubscribe();
+      if (typeof unsubscribe === "function") {
+        unsubscribe();
+      }
     };
-  }, []);
+  }, [options?.enabled]);
 
   // Ensure that initial configurations are seeded in Firestore under the logged in user
   const ensureUserSeeded = async (u: User, initialRole: UserRole = "parent") => {
@@ -1027,6 +1034,10 @@ export function useFirebaseSync() {
 
   // Real-time listen to user Firestore subcollections (Single stable subscription lifecycle)
   useEffect(() => {
+    if (options?.enabled === false) {
+      return;
+    }
+
     if (!user) {
       if (!isGuestMode) {
         setProfiles(initialProfiles);
@@ -1320,7 +1331,7 @@ export function useFirebaseSync() {
     return () => {
       unsubscribes.forEach(unsub => unsub());
     };
-  }, [user?.uid, isQuotaExhausted]);
+  }, [user?.uid, isQuotaExhausted, options?.enabled]);
 
 
   const loginWithEmail = async (email: string, password: string, rememberMe: boolean) => {

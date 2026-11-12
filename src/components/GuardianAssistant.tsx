@@ -30,14 +30,26 @@ interface GuardianAssistantProps {
   isEmbedded?: boolean;
   user?: any;
   userData?: any;
+  isDemoMode?: boolean;
 }
 
 export default function GuardianAssistant({ 
   viewMode, 
   isEmbedded = false,
   user,
-  userData
+  userData,
+  isDemoMode = false
 }: GuardianAssistantProps) {
+  // Safe demo mode determination
+  const isEffectiveDemo = Boolean(
+    isDemoMode ||
+    user?.uid === "demo-parent-eval-uid" ||
+    user?.uid === "demo-child-eval-uid" ||
+    user?.uid?.startsWith("demo-") ||
+    userData?.email?.includes("eval.local") ||
+    userData?.familyCode === "EVAL-FAM-2026"
+  );
+
   // Authoritative role check: child accounts or companion view are strictly child mode
   const authoritativeRole = userData?.role || null;
   const isChildUser = authoritativeRole === "child" || viewMode === "companion";
@@ -45,7 +57,7 @@ export default function GuardianAssistant({
   const [isOpen, setIsOpen] = useState(isEmbedded); // Default open if embedded
   const [showSidebar, setShowSidebar] = useState(false);
   const [mode, setMode] = useState<"parent" | "child">(isChildUser ? "child" : "parent");
-  const [currentUid, setCurrentUid] = useState<string>(user?.uid || user?.id || "guest");
+  const [currentUid, setCurrentUid] = useState<string>(user?.uid || user?.id || (isEffectiveDemo ? "demo-parent-eval-uid" : "guest"));
 
   // Safe mode switcher that strictly prevents child accounts from switching to parent mode
   const handleSetMode = (newMode: "parent" | "child") => {
@@ -110,6 +122,20 @@ export default function GuardianAssistant({
 
   // 1. Monitor Auth State & load real telemetry context
   useEffect(() => {
+    if (isEffectiveDemo) {
+      // In demo mode: skip Firebase auth observer and do not query real-child Firestore telemetry
+      const demoId = user?.uid || "demo-parent-eval-uid";
+      setCurrentUid(demoId);
+      if (!isChildUser) {
+        setChildContext((prev: any) => ({
+          ...prev,
+          name: "Leo Miller",
+          hasRealData: true
+        }));
+      }
+      return;
+    }
+
     if (user?.uid || user?.id) {
       const activeId = user.uid || user.id;
       setCurrentUid(activeId);
@@ -129,11 +155,11 @@ export default function GuardianAssistant({
       }
     });
     return () => unsubscribe();
-  }, [user, isChildUser]);
+  }, [user, isChildUser, isEffectiveDemo]);
 
-  // Fetch real telemetry data from Firestore (only for authorized parents)
+  // Fetch real telemetry data from Firestore (only for authorized parents in live mode)
   const fetchRealChildData = async (uid: string) => {
-    if (isChildUser) return; // Prevent children from querying parent telemetry
+    if (isChildUser || isEffectiveDemo || uid.startsWith("demo-")) return; // Prevent children and demo accounts from querying parent telemetry
     try {
       // Fetch user profile
       const userDocRef = doc(db, "users", uid);

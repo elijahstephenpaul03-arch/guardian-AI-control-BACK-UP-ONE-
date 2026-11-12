@@ -1,5 +1,6 @@
 import React from "react";
-import { Sparkles, Shield, Compass, HeartHandshake, ShieldAlert, ArrowLeft, Eye } from "lucide-react";
+import { Sparkles, Shield, Compass, HeartHandshake, ShieldAlert, ArrowLeft, Eye, RotateCcw } from "lucide-react";
+import { resetDemoFamilyState } from "../lib/createDemoSync";
 
 interface DemoBannerProps {
   currentRole: "parent" | "child" | "admin" | "hub";
@@ -55,6 +56,18 @@ export default function DemoBanner({ currentRole, navigate }: DemoBannerProps) {
           >
             <ShieldAlert className="h-3.5 w-3.5 text-rose-400" />
             <span>Admin Demo</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              resetDemoFamilyState();
+            }}
+            className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 transition cursor-pointer flex items-center space-x-1"
+            title="Reset Demo Family Link State to initial pending request"
+          >
+            <RotateCcw className="h-3.5 w-3.5 text-amber-400" />
+            <span>Reset Demo</span>
           </button>
 
           <button

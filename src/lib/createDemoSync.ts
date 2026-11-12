@@ -28,9 +28,58 @@ let sharedDemoSosAlerts: SosAlert[] = [
 ];
 const demoSosListeners = new Set<() => void>();
 
+export interface DemoFamilyLinkState {
+  status: "pending" | "accepted" | "rejected";
+  pendingRequests: any[];
+  childFamilyRequest: any | null;
+  profiles: ChildProfile[];
+}
+
+export const INITIAL_DEMO_FAMILY_REQUEST = {
+  id: "demo-req-1",
+  childUid: "demo-child-eval-uid",
+  childName: "Leo Miller",
+  childEmail: "demo-child@guardian-eval.local",
+  familyCode: "EVAL-FAM-2026",
+  parentUid: "demo-parent-eval-uid",
+  status: "pending" as const,
+  createdAt: new Date().toISOString()
+};
+
+// Leo profile to link upon acceptance
+export const DEMO_LEO_PROFILE: ChildProfile = initialProfiles[0];
+// Emily profile already linked
+export const DEMO_EMILY_PROFILE: ChildProfile = initialProfiles[1];
+
+let sharedDemoFamilyState: DemoFamilyLinkState = {
+  status: "pending",
+  pendingRequests: [{ ...INITIAL_DEMO_FAMILY_REQUEST }],
+  childFamilyRequest: { ...INITIAL_DEMO_FAMILY_REQUEST },
+  profiles: [DEMO_EMILY_PROFILE]
+};
+const demoFamilyListeners = new Set<() => void>();
+
+export function resetDemoFamilyState() {
+  sharedDemoFamilyState = {
+    status: "pending",
+    pendingRequests: [{ ...INITIAL_DEMO_FAMILY_REQUEST, createdAt: new Date().toISOString() }],
+    childFamilyRequest: { ...INITIAL_DEMO_FAMILY_REQUEST, createdAt: new Date().toISOString() },
+    profiles: [DEMO_EMILY_PROFILE]
+  };
+  demoFamilyListeners.forEach(l => l());
+}
+
+if (typeof window !== "undefined") {
+  (window as any).resetGuardianDemoFamily = resetDemoFamilyState;
+}
+
 export function useDemoSync(mode: "parent" | "child" | "admin") {
-  // Profiles state (Leo & Emily)
-  const [profiles, setProfiles] = useState<ChildProfile[]>(initialProfiles);
+  // Profiles and family request state synced from sharedDemoFamilyState
+  const [profiles, setProfiles] = useState<ChildProfile[]>(sharedDemoFamilyState.profiles);
+  const [pendingRequests, setPendingRequests] = useState<any[]>(sharedDemoFamilyState.pendingRequests);
+  const [childFamilyRequest, setChildFamilyRequest] = useState<any | null>(sharedDemoFamilyState.childFamilyRequest);
+  const [demoFamilyStatus, setDemoFamilyStatus] = useState<"pending" | "accepted" | "rejected">(sharedDemoFamilyState.status);
+
   const [logs, setLogs] = useState<ActivityLog[]>(initialLogs);
   const [homeworkList, setHomeworkList] = useState<HomeworkTask[]>(DEMO_HOMEWORK_LIST);
   const [dailyGoalsList, setDailyGoalsList] = useState<DailyGoal[]>(DEMO_DAILY_GOALS);
@@ -39,10 +88,20 @@ export function useDemoSync(mode: "parent" | "child" | "admin") {
   const [demoSosList, setDemoSosList] = useState<SosAlert[]>(sharedDemoSosAlerts);
 
   useEffect(() => {
-    const update = () => setDemoSosList([...sharedDemoSosAlerts]);
-    demoSosListeners.add(update);
+    const updateSos = () => setDemoSosList([...sharedDemoSosAlerts]);
+    demoSosListeners.add(updateSos);
+
+    const updateFamily = () => {
+      setProfiles([...sharedDemoFamilyState.profiles]);
+      setPendingRequests([...sharedDemoFamilyState.pendingRequests]);
+      setChildFamilyRequest(sharedDemoFamilyState.childFamilyRequest ? { ...sharedDemoFamilyState.childFamilyRequest } : null);
+      setDemoFamilyStatus(sharedDemoFamilyState.status);
+    };
+    demoFamilyListeners.add(updateFamily);
+
     return () => {
-      demoSosListeners.delete(update);
+      demoSosListeners.delete(updateSos);
+      demoFamilyListeners.delete(updateFamily);
     };
   }, []);
 
@@ -100,19 +159,37 @@ export function useDemoSync(mode: "parent" | "child" | "admin") {
 
   const currentUserData = mode === "admin"
     ? DEMO_ADMIN_DATA
-    : (mode === "child" ? DEMO_CHILD_DATA : DEMO_PARENT_DATA);
+    : (mode === "child"
+        ? {
+            ...DEMO_CHILD_DATA,
+            parentId: demoFamilyStatus === "accepted" ? "demo-parent-eval-uid" : undefined,
+            status: demoFamilyStatus === "rejected" ? "rejected" : (demoFamilyStatus === "accepted" ? "active" : "pending")
+          }
+        : DEMO_PARENT_DATA);
 
   // Simulated actions for demo
   const addProfileInDb = async (profile: ChildProfile) => {
-    setProfiles(prev => [...prev, profile]);
+    sharedDemoFamilyState = {
+      ...sharedDemoFamilyState,
+      profiles: [...sharedDemoFamilyState.profiles, profile]
+    };
+    demoFamilyListeners.forEach(l => l());
   };
 
   const updateProfileInDb = async (profileId: string, fields: Partial<ChildProfile>) => {
-    setProfiles(prev => prev.map(p => p.id === profileId ? { ...p, ...fields } : p));
+    sharedDemoFamilyState = {
+      ...sharedDemoFamilyState,
+      profiles: sharedDemoFamilyState.profiles.map(p => p.id === profileId ? { ...p, ...fields } : p)
+    };
+    demoFamilyListeners.forEach(l => l());
   };
 
   const deleteProfileInDb = async (profileId: string) => {
-    setProfiles(prev => prev.filter(p => p.id !== profileId));
+    sharedDemoFamilyState = {
+      ...sharedDemoFamilyState,
+      profiles: sharedDemoFamilyState.profiles.filter(p => p.id !== profileId)
+    };
+    demoFamilyListeners.forEach(l => l());
   };
 
   const addHomeworkTask = async (task: Partial<HomeworkTask>) => {
@@ -221,6 +298,121 @@ export function useDemoSync(mode: "parent" | "child" | "admin") {
     return [DEMO_FAMILY_DATA];
   };
 
+  // Demo Family Link Request Handlers
+  const acceptFamilyRequest = async (requestId: string, childUid?: string, childName?: string, childEmail?: string) => {
+    // Artificial 250ms delay to simulate real network roundtrip
+    await new Promise(r => setTimeout(r, 250));
+
+    const exists = sharedDemoFamilyState.pendingRequests.some(r => r.id === requestId);
+    if (!exists && requestId !== "demo-req-1") {
+      throw new Error(`[DEMO] Pending family link request "${requestId}" not found.`);
+    }
+
+    const acceptedRequest = {
+      id: requestId,
+      childUid: childUid || "demo-child-eval-uid",
+      childName: childName || "Leo Miller",
+      childEmail: childEmail || "demo-child@guardian-eval.local",
+      familyCode: "EVAL-FAM-2026",
+      parentUid: "demo-parent-eval-uid",
+      status: "accepted" as const,
+      createdAt: new Date().toISOString()
+    };
+
+    // Ensure Leo Miller is in the linked profiles list upon acceptance
+    const hasLeo = sharedDemoFamilyState.profiles.some(p => p.id === "child-1");
+    const updatedProfiles = hasLeo
+      ? sharedDemoFamilyState.profiles
+      : [DEMO_LEO_PROFILE, ...sharedDemoFamilyState.profiles];
+
+    sharedDemoFamilyState = {
+      status: "accepted",
+      pendingRequests: sharedDemoFamilyState.pendingRequests.filter(r => r.id !== requestId),
+      childFamilyRequest: acceptedRequest,
+      profiles: updatedProfiles
+    };
+
+    demoFamilyListeners.forEach(listener => listener());
+
+    return {
+      success: true,
+      message: `[DEMO] Connection request for ${childName || "Leo Miller"} accepted. Leo is now connected to the demo family network.`
+    };
+  };
+
+  const approveFamilyRequest = acceptFamilyRequest;
+
+  const rejectFamilyRequest = async (requestId: string) => {
+    // Artificial 250ms delay to simulate real network roundtrip
+    await new Promise(r => setTimeout(r, 250));
+
+    const exists = sharedDemoFamilyState.pendingRequests.some(r => r.id === requestId);
+    if (!exists && requestId !== "demo-req-1") {
+      throw new Error(`[DEMO] Pending family link request "${requestId}" not found.`);
+    }
+
+    const rejectedRequest = {
+      id: requestId,
+      childUid: "demo-child-eval-uid",
+      childName: "Leo Miller",
+      childEmail: "demo-child@guardian-eval.local",
+      familyCode: "EVAL-FAM-2026",
+      parentUid: "demo-parent-eval-uid",
+      status: "rejected" as const,
+      createdAt: new Date().toISOString()
+    };
+
+    sharedDemoFamilyState = {
+      status: "rejected",
+      pendingRequests: sharedDemoFamilyState.pendingRequests.filter(r => r.id !== requestId),
+      childFamilyRequest: rejectedRequest,
+      profiles: sharedDemoFamilyState.profiles.filter(p => p.id !== "child-1")
+    };
+
+    demoFamilyListeners.forEach(listener => listener());
+
+    return {
+      success: true,
+      message: "[DEMO] Family connection request rejected. Real records were not modified."
+    };
+  };
+
+  const removeChildFromFamily = async (childId: string) => {
+    sharedDemoFamilyState = {
+      status: "rejected",
+      pendingRequests: [],
+      childFamilyRequest: {
+        id: "demo-req-disconnected",
+        childUid: "demo-child-eval-uid",
+        childName: "Leo Miller",
+        childEmail: "demo-child@guardian-eval.local",
+        familyCode: "EVAL-FAM-2026",
+        parentUid: "demo-parent-eval-uid",
+        status: "rejected" as const,
+        createdAt: new Date().toISOString()
+      },
+      profiles: sharedDemoFamilyState.profiles.filter(p => p.id !== childId)
+    };
+    demoFamilyListeners.forEach(listener => listener());
+    return { success: true, message: "[DEMO] Child disconnected from demo family." };
+  };
+
+  const joinFamilyByCode = async (code: string) => {
+    const clean = (code || "").trim().toUpperCase();
+    if (clean !== "EVAL-FAM-2026") {
+      return { success: false, message: `[DEMO] Invalid demo Family Code "${clean}". Use evaluation code EVAL-FAM-2026.` };
+    }
+    // Re-create the pending request for Leo
+    sharedDemoFamilyState = {
+      status: "pending",
+      pendingRequests: [{ ...INITIAL_DEMO_FAMILY_REQUEST, createdAt: new Date().toISOString() }],
+      childFamilyRequest: { ...INITIAL_DEMO_FAMILY_REQUEST, createdAt: new Date().toISOString() },
+      profiles: [DEMO_EMILY_PROFILE]
+    };
+    demoFamilyListeners.forEach(listener => listener());
+    return { success: true, message: `[DEMO] Sent connection request with code ${clean}. Awaiting parent approval.` };
+  };
+
   return {
     isDemoMode: true,
     user: currentUser,
@@ -237,19 +429,13 @@ export function useDemoSync(mode: "parent" | "child" | "admin") {
     setSafeZones,
     chatHistory,
     setChatHistory,
-    pendingRequests: [
-      {
-        id: "demo-req-1",
-        childUid: "demo-child-eval-uid",
-        childName: "Leo Miller",
-        childEmail: "demo-child@guardian-eval.local",
-        familyCode: "EVAL-FAM-2026",
-        parentUid: "demo-parent-eval-uid",
-        status: "pending",
-        createdAt: new Date().toISOString()
-      }
-    ],
-    childFamilyRequest: null,
+    pendingRequests,
+    childFamilyRequest,
+    acceptFamilyRequest,
+    approveFamilyRequest,
+    rejectFamilyRequest,
+    removeChildFromFamily,
+    resetDemoFamilyState,
     homeworkList,
     dailyGoalsList,
     platformUsers,
@@ -270,9 +456,7 @@ export function useDemoSync(mode: "parent" | "child" | "admin") {
     triggerSosAlert,
     fetchPlatformUsers,
     fetchAllFamilies,
-    joinFamilyByCode: async (code: string) => {
-      return { success: true, message: `[DEMO] Connected to demo family with code ${code}. Real records were not modified.` };
-    },
+    joinFamilyByCode,
     registerCurrentChildDevice: async () => {}
   };
 }

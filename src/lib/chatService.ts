@@ -35,7 +35,7 @@ export interface ChatMessage {
 
 // Helper to verify active Firebase authentication matching the requested user ID
 function isUserAuthenticatedFor(uid: string): boolean {
-  if (!uid || uid === "guest" || uid.startsWith("guest")) return false;
+  if (!uid || uid === "guest" || uid.startsWith("guest") || uid.startsWith("demo-")) return false;
   const current = auth.currentUser;
   return !!(current && current.uid === uid);
 }

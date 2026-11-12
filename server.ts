@@ -12,7 +12,9 @@ import {
 dotenv.config();
 
 const app = express();
-const PORT = 3000;
+const portArgIdx = process.argv.indexOf("--port");
+const argPort = portArgIdx !== -1 && process.argv[portArgIdx + 1] ? parseInt(process.argv[portArgIdx + 1], 10) : undefined;
+const PORT = argPort || (process.env.PORT ? parseInt(process.env.PORT, 10) : 3000);
 
 app.use(express.json());
 
@@ -480,6 +482,7 @@ async function setupServer() {
         middlewareMode: true,
         allowedHosts: true,
         hmr: false,
+        ws: false,
       },
       appType: "spa",
     });
@@ -493,21 +496,46 @@ async function setupServer() {
     });
   }
 
-  const server = app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Guardian AI Server running at http://0.0.0.0:${PORT}`);
-  });
+  function startListening(retries = 5, delay = 1000) {
+    const server = app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Guardian AI Server running at http://0.0.0.0:${PORT}`);
+    });
 
-  server.on("error", (err: any) => {
-    if (err.code === "EADDRINUSE") {
-      console.warn(`[PORT CONFLICT] Port ${PORT} busy, retrying in 1s...`);
-      setTimeout(() => {
-        server.close();
-        app.listen(PORT, "0.0.0.0");
-      }, 1000);
-    } else {
-      console.error("[SERVER LISTEN ERROR]", err);
-    }
-  });
+    server.on("error", (err: any) => {
+      if (err.code === "EADDRINUSE") {
+        console.warn(`[PORT CONFLICT] Port ${PORT} busy. Retrying in ${delay}ms (${retries} retries remaining)...`);
+        try {
+          server.close();
+        } catch (_) {}
+
+        if (retries > 0) {
+          setTimeout(() => {
+            startListening(retries - 1, delay);
+          }, delay);
+        } else {
+          console.error(`[SERVER FATAL] Port ${PORT} remained in use after all retries.`);
+        }
+      } else {
+        console.error("[SERVER LISTEN ERROR]", err);
+      }
+    });
+
+    const shutdown = () => {
+      console.log("[SERVER] Received termination signal, closing server gracefully...");
+      try {
+        server.close(() => {
+          process.exit(0);
+        });
+      } catch (_) {
+        process.exit(0);
+      }
+    };
+
+    process.once("SIGTERM", shutdown);
+    process.once("SIGINT", shutdown);
+  }
+
+  startListening();
 }
 
 if (!process.env.VERCEL) {
