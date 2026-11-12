@@ -373,7 +373,7 @@ export default function App() {
         <main className="flex-1 flex flex-col">
           <Dashboard syncProps={demoParentSync} activeTabFromUrl={requestedTab} />
         </main>
-        <GuardianAssistant viewMode="dashboard" user={demoParentSync.user} userData={demoParentSync.userData} isDemoMode={true} />
+        <GuardianAssistant viewMode="dashboard" user={demoParentSync.user} userData={demoParentSync.userData} isDemoMode={true} syncProps={demoParentSync} />
         <FeatureTourModal isOpen={showTourModal} onClose={() => setShowTourModal(false)} />
       </div>
     );
@@ -708,7 +708,7 @@ export default function App() {
         <main className="flex-1 flex flex-col">
           <CompanionSimulator onBackToDashboard={() => navigate("/parent")} />
         </main>
-        <GuardianAssistant viewMode="companion" user={user} userData={userData} />
+        <GuardianAssistant viewMode="companion" user={user} userData={userData} syncProps={activeSyncProps} />
       </div>
     );
   }
@@ -830,7 +830,7 @@ export default function App() {
         <main className="flex-1 flex flex-col">
           <Dashboard syncProps={activeSyncProps} activeTabFromUrl={requestedTab} />
         </main>
-        <GuardianAssistant viewMode="dashboard" user={user} userData={userData} />
+        <GuardianAssistant viewMode="dashboard" user={user} userData={userData} syncProps={activeSyncProps} />
         <FeatureTourModal isOpen={showTourModal} onClose={() => setShowTourModal(false)} />
       </div>
     );

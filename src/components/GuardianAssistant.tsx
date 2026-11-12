@@ -31,6 +31,7 @@ interface GuardianAssistantProps {
   user?: any;
   userData?: any;
   isDemoMode?: boolean;
+  syncProps?: any;
 }
 
 export default function GuardianAssistant({ 
@@ -38,7 +39,8 @@ export default function GuardianAssistant({
   isEmbedded = false,
   user,
   userData,
-  isDemoMode = false
+  isDemoMode = false,
+  syncProps
 }: GuardianAssistantProps) {
   // Safe demo mode determination
   const isEffectiveDemo = Boolean(
@@ -50,14 +52,31 @@ export default function GuardianAssistant({
     userData?.familyCode === "EVAL-FAM-2026"
   );
 
+  const activeId = user?.uid || user?.id || null;
+
+  // Genuine Firebase session check: only true if Firebase Auth has an active user matching activeId
+  const isFirebaseSession = Boolean(
+    !isEffectiveDemo &&
+    auth.currentUser &&
+    activeId &&
+    auth.currentUser.uid === activeId
+  );
+
+  // Supabase session: active authenticated session without a matching Firebase Auth currentUser
+  const isSupabaseSession = Boolean(
+    !isEffectiveDemo &&
+    !isFirebaseSession &&
+    (user?.rawSupabaseUser || syncProps?.isSupabaseMode || (activeId && !auth.currentUser))
+  );
+
   // Authoritative role check: child accounts or companion view are strictly child mode
-  const authoritativeRole = userData?.role || null;
+  const authoritativeRole = userData?.role || syncProps?.userData?.role || null;
   const isChildUser = authoritativeRole === "child" || viewMode === "companion";
 
   const [isOpen, setIsOpen] = useState(isEmbedded); // Default open if embedded
   const [showSidebar, setShowSidebar] = useState(false);
   const [mode, setMode] = useState<"parent" | "child">(isChildUser ? "child" : "parent");
-  const [currentUid, setCurrentUid] = useState<string>(user?.uid || user?.id || (isEffectiveDemo ? "demo-parent-eval-uid" : "guest"));
+  const [currentUid, setCurrentUid] = useState<string>(activeId || (isEffectiveDemo ? "demo-parent-eval-uid" : "guest"));
 
   // Safe mode switcher that strictly prevents child accounts from switching to parent mode
   const handleSetMode = (newMode: "parent" | "child") => {
@@ -98,20 +117,23 @@ export default function GuardianAssistant({
   const [editingMsgId, setEditingMsgId] = useState<string | null>(null);
   const [editingMsgText, setEditingMsgText] = useState("");
 
-  // Real child context telemetry fetched from Firestore or LocalStorage
+  // Real child context telemetry fetched from Firestore, Supabase, or LocalStorage
   const [childContext, setChildContext] = useState<any>({
     name: "Alex",
     age: 12,
     status: "online",
     screenTimeLimit: 120,
-    screenTimeToday: 82,
-    riskScore: 18,
+    screenTimeToday: null,
+    riskScore: null,
     battery: null,
     location: null,
     hasRealData: false
   });
   const [realLogs, setRealLogs] = useState<any[]>([]);
   const [realDangerousEvents, setRealDangerousEvents] = useState<any[]>([]);
+
+  // Ref to track fetched Firebase UIDs to prevent duplicate or unnecessary Firebase requests
+  const fetchedFirebaseUidRef = useRef<string | null>(null);
 
   // Refs
   const chatContainerRef = useRef<HTMLDivElement>(null);
@@ -120,7 +142,77 @@ export default function GuardianAssistant({
   const activeAbortControllerRef = useRef<AbortController | null>(null);
   const currentRequestIdRef = useRef<string | null>(null);
 
-  // 1. Monitor Auth State & load real telemetry context
+  // 1A. Authoritative profile and live telemetry synchronization for Supabase sessions
+  useEffect(() => {
+    if (isEffectiveDemo || !isSupabaseSession) return;
+
+    if (activeId) {
+      setCurrentUid(activeId);
+    }
+
+    const effectiveUserData = userData || syncProps?.userData;
+    const effectiveProfiles: any[] = syncProps?.profiles || [];
+    const firstChild = effectiveProfiles[0];
+
+    // Authoritative child name resolution: linked profile first, then profile data
+    const resolvedChildName =
+      firstChild?.name ||
+      firstChild?.displayName ||
+      effectiveUserData?.childName ||
+      (effectiveUserData?.role === "child" ? (effectiveUserData?.fullName || effectiveUserData?.displayName) : null);
+
+    // Authoritative telemetry from Parent Dashboard syncProps (no fabricated data)
+    const authLogs = syncProps?.activityLogs || syncProps?.logs || [];
+    const authDangerousEvents = syncProps?.dangerousEvents || [];
+    const authDevices = syncProps?.devices || [];
+
+    if (Array.isArray(authLogs) && authLogs.length > 0) {
+      setRealLogs(authLogs);
+    } else {
+      setRealLogs([]);
+    }
+
+    if (Array.isArray(authDangerousEvents) && authDangerousEvents.length > 0) {
+      setRealDangerousEvents(authDangerousEvents);
+    } else {
+      setRealDangerousEvents([]);
+    }
+
+    // Preserve distinction: profile info available vs. real telemetry loaded
+    const hasLiveTelemetry = Boolean(
+      (Array.isArray(authLogs) && authLogs.length > 0) ||
+      (Array.isArray(authDangerousEvents) && authDangerousEvents.length > 0) ||
+      (Array.isArray(authDevices) && authDevices.length > 0)
+    );
+
+    const activeChildDevice = authDevices.find((d: any) => d.childId === firstChild?.id) || authDevices[0];
+
+    if (!isChildUser) {
+      setChildContext((prev: any) => ({
+        ...prev,
+        name: resolvedChildName || prev.name || "Alex",
+        age: firstChild?.age || prev.age || 12,
+        status: activeChildDevice?.status || (activeChildDevice?.isOnline ? "online" : "offline") || prev.status,
+        battery: typeof activeChildDevice?.battery === "number" ? activeChildDevice.battery : null,
+        location: activeChildDevice?.location || null,
+        hasRealData: hasLiveTelemetry
+      }));
+    }
+  }, [
+    isEffectiveDemo,
+    isSupabaseSession,
+    activeId,
+    isChildUser,
+    userData,
+    syncProps?.userData,
+    syncProps?.profiles,
+    syncProps?.activityLogs,
+    syncProps?.logs,
+    syncProps?.dangerousEvents,
+    syncProps?.devices
+  ]);
+
+  // 1B. Monitor Auth State & load real telemetry context (for genuine Firebase & Demo sessions only)
   useEffect(() => {
     if (isEffectiveDemo) {
       // In demo mode: skip Firebase auth observer and do not query real-child Firestore telemetry
@@ -136,8 +228,13 @@ export default function GuardianAssistant({
       return;
     }
 
-    if (user?.uid || user?.id) {
-      const activeId = user.uid || user.id;
+    // In Supabase mode: strictly skip Firebase auth observer and do not query Firestore
+    if (isSupabaseSession) {
+      return;
+    }
+
+    // Genuine Firebase mode: only query Firestore if auth.currentUser exists and matches activeId
+    if (activeId && auth.currentUser && auth.currentUser.uid === activeId) {
       setCurrentUid(activeId);
       if (!isChildUser) {
         fetchRealChildData(activeId);
@@ -145,23 +242,37 @@ export default function GuardianAssistant({
     }
 
     const unsubscribe = auth.onAuthStateChanged(async (firebaseUser) => {
-      if (firebaseUser) {
+      if (firebaseUser && auth.currentUser && auth.currentUser.uid === firebaseUser.uid) {
         setCurrentUid(firebaseUser.uid);
         if (!isChildUser) {
           fetchRealChildData(firebaseUser.uid);
         }
-      } else if (!user) {
+      } else if (!user && !activeId) {
         setCurrentUid("guest");
       }
     });
-    return () => unsubscribe();
-  }, [user, isChildUser, isEffectiveDemo]);
 
-  // Fetch real telemetry data from Firestore (only for authorized parents in live mode)
+    return () => unsubscribe();
+  }, [user, activeId, isChildUser, isEffectiveDemo, isSupabaseSession]);
+
+  // Fetch real telemetry data from Firestore (ONLY for genuine Firebase-authenticated sessions)
   const fetchRealChildData = async (uid: string) => {
-    if (isChildUser || isEffectiveDemo || uid.startsWith("demo-")) return; // Prevent children and demo accounts from querying parent telemetry
+    // 1. Guard against child users, demo accounts, or empty/guest UIDs
+    if (isChildUser || isEffectiveDemo || !uid || uid.startsWith("demo-") || uid === "guest") return;
+
+    // 2. Strict Firebase Auth verification: only permit read when auth.currentUser exists AND matches uid
+    if (!auth.currentUser || auth.currentUser.uid !== uid) {
+      return;
+    }
+
+    // 3. Prevent duplicate requests for the same UID
+    if (fetchedFirebaseUidRef.current === uid) {
+      return;
+    }
+    fetchedFirebaseUidRef.current = uid;
+
     try {
-      // Fetch user profile
+      // Fetch user profile from Firestore
       const userDocRef = doc(db, "users", uid);
       const snap = await getDoc(userDocRef);
       if (snap.exists()) {

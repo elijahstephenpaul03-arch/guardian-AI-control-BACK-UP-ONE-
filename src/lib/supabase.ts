@@ -160,7 +160,7 @@ export interface Database {
           sos_active: boolean;
           parent_id: string | null;
           child_id: string | null;
-          family_code: string | null;
+          family_code?: string | null;
           updated_at: string;
         };
         Insert: {
@@ -1320,7 +1320,7 @@ export async function registerChildDeviceInSupabase(params: RegisterDeviceParams
   const devName = params.deviceName || `${params.deviceType ? params.deviceType.charAt(0).toUpperCase() + params.deviceType.slice(1) : "Companion"} Device`;
 
   // Upsert payload contains only verified, actual columns of public.devices:
-  // device_id, device_name, device_model, android_version, battery, charging, online, gps, screen_on, last_seen, connection_quality, sos_active, parent_id, child_id, family_code, updated_at
+  // device_id, device_name, device_model, android_version, battery, charging, online, gps, screen_on, last_seen, connection_quality, sos_active, parent_id, child_id, updated_at
   const row: Record<string, any> = {
     device_id: devId,
     device_name: devName,
@@ -1338,10 +1338,6 @@ export async function registerChildDeviceInSupabase(params: RegisterDeviceParams
     child_id: effectiveChildId,
     updated_at: nowIso,
   };
-
-  if (callerProfile.familyCode) {
-    row.family_code = callerProfile.familyCode;
-  }
 
   // Targeted operation to prevent dual-policy evaluation mismatches:
   // Existing device owned by child: UPDATE
